@@ -40,6 +40,8 @@ def normalize_banner_url(url: str) -> str:
     if not url:
         return ""
     url = url.strip()
+    if "BlAM6rQ" in url:
+        return "https://i.imgur.com/0pptHC0.jpeg"
     if "fQEFWks" in url:
         return "https://i.imgur.com/P7RI1Dp.jpeg"
     if "imgur.com/" in url and "i.imgur.com" not in url and "/a/" not in url and "/gallery/" not in url:
@@ -49,7 +51,7 @@ def normalize_banner_url(url: str) -> str:
 
 
 def make_wide_banner(image_bytes: bytes, target_ratio: float = 1.85) -> io.BytesIO:
-    """Расширяет изображение до формата 1.85:1 (1200x648), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
+    """Расширяет изображение до формата 1.85:1 (1200x648), если требуется кадрирование"""
     if not Image:
         return io.BytesIO(image_bytes)
     try:
@@ -127,8 +129,15 @@ async def get_banner_file(url):
                     data = await resp.read()
                     if not data:
                         return None
-                    processed_io = make_wide_banner(data)
-                    return discord.File(processed_io, filename="banner.png")
+                    # Возвращаем оригинальное изображение без искажения и белых рамок
+                    ext = "png"
+                    if "jpeg" in resp.headers.get("Content-Type", "") or url.lower().endswith((".jpg", ".jpeg")):
+                        ext = "jpg"
+                    elif "gif" in resp.headers.get("Content-Type", "") or url.lower().endswith(".gif"):
+                        ext = "gif"
+                    elif "webp" in resp.headers.get("Content-Type", "") or url.lower().endswith(".webp"):
+                        ext = "webp"
+                    return discord.File(io.BytesIO(data), filename=f"banner.{ext}")
                 else:
                     print(f"[TICKET] Banner download failed HTTP {resp.status} for {url}")
     except Exception as e:
@@ -143,7 +152,7 @@ def build_panel_embeds(panel, banner_filename=None):
     embeds = []
 
     # Невидимый распорочный символ U+2800 (Braille Blank), снимающий лимит в 300px и растягивающий оба Embed ровно на 520px
-    width_spacer = "\u2800" * 45
+    width_spacer = "\u2800" * 65
 
     if banner_filename:
         banner_embed = discord.Embed(
