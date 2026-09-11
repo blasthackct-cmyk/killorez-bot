@@ -59,6 +59,15 @@ async def on_ready():
         except Exception as e:
             log.error(f'[ERROR] Ошибка загрузки кога {cog_name}: {e}', exc_info=True)
 
+    # Очищаем локальные дубликаты на всех серверах
+    for guild in bot.guilds:
+        try:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+            log.info(f'Очищены локальные команды сервера: {guild.name}')
+        except Exception as e:
+            log.warning(f'Не удалось очистить команды сервера {guild.name}: {e}')
+
     # Sync commands
     try:
         synced = await bot.tree.sync()
