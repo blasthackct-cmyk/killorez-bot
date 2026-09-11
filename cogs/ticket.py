@@ -48,8 +48,8 @@ def normalize_banner_url(url: str) -> str:
     return url
 
 
-def make_wide_banner(image_bytes: bytes, target_ratio: float = 2.3) -> io.BytesIO:
-    """Расширяет изображение до формата 2.3:1 (1200x522), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
+def make_wide_banner(image_bytes: bytes, target_ratio: float = 1.85) -> io.BytesIO:
+    """Расширяет изображение до формата 1.85:1 (1200x648), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
     if not Image:
         return io.BytesIO(image_bytes)
     try:
@@ -142,18 +142,22 @@ def build_panel_embeds(panel, banner_filename=None):
     banner_url = normalize_banner_url(panel.get('banner_url', '').strip()) if panel else ""
     embeds = []
 
-    # Невидимый распорочный символ U+2800 (Braille Blank), гарантирующий растягивание обоих Embed на одинаковую ширину в 520px
-    width_spacer = "\u2800" * 38
+    # Невидимый распорочный символ U+2800 (Braille Blank), снимающий лимит в 300px и растягивающий оба Embed ровно на 520px
+    width_spacer = "\u2800" * 45
 
     if banner_filename:
-        banner_embed = discord.Embed(color=0x2B2D31)
+        banner_embed = discord.Embed(
+            description=width_spacer,
+            color=0x2B2D31
+        )
         banner_embed.set_image(url=f"attachment://{banner_filename}")
-        banner_embed.set_footer(text=width_spacer)
         embeds.append(banner_embed)
     elif banner_url:
-        banner_embed = discord.Embed(color=0x2B2D31)
+        banner_embed = discord.Embed(
+            description=width_spacer,
+            color=0x2B2D31
+        )
         banner_embed.set_image(url=banner_url)
-        banner_embed.set_footer(text=width_spacer)
         embeds.append(banner_embed)
 
     full_desc = desc.rstrip() + f"\n\n{width_spacer}"
