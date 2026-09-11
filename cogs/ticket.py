@@ -49,7 +49,7 @@ def normalize_banner_url(url: str) -> str:
 
 
 def make_wide_banner(image_bytes: bytes, target_ratio: float = 2.3) -> io.BytesIO:
-    """Расширяет изображение до соотношения 2.3:1 (ультраширокий баннер), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
+    """Расширяет изображение до формата 2.3:1 (1200x522), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
     if not Image:
         return io.BytesIO(image_bytes)
     try:
@@ -59,30 +59,32 @@ def make_wide_banner(image_bytes: bytes, target_ratio: float = 2.3) -> io.BytesI
                 return io.BytesIO(image_bytes)
 
             ratio = w / h
-            # Если картинка уже достаточно широкая, не меняем её
             if ratio >= target_ratio:
                 return io.BytesIO(image_bytes)
 
-            # Целевое соотношение: 2.3:1 для гарантированного заполнения всей ширины блока с текстом
-            target_w = int(h * target_ratio)
-            img_converted = img.convert("RGBA")
+            target_w = 1200
+            target_h = int(target_w / target_ratio)
 
-            # Определяем цвет фона по углам
+            scale = target_h / h
+            scaled_w = int(w * scale)
+            scaled_h = target_h
+            img_resized = img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            img_converted = img_resized.convert("RGBA")
+
             corners = [
                 img_converted.getpixel((0, 0)),
-                img_converted.getpixel((w - 1, 0)),
-                img_converted.getpixel((0, h - 1)),
-                img_converted.getpixel((w - 1, h - 1))
+                img_converted.getpixel((scaled_w - 1, 0)),
+                img_converted.getpixel((0, scaled_h - 1)),
+                img_converted.getpixel((scaled_w - 1, scaled_h - 1))
             ]
 
-            # Если в углах есть прозрачность, берем цвет фона Discord Embed (43, 45, 49)
             if any(c[3] < 128 for c in corners):
                 bg_color = (43, 45, 49, 255)
             else:
                 bg_color = corners[0]
 
-            canvas = Image.new("RGBA", (target_w, h), bg_color)
-            offset_x = (target_w - w) // 2
+            canvas = Image.new("RGBA", (target_w, target_h), bg_color)
+            offset_x = (target_w - scaled_w) // 2
             canvas.paste(img_converted, (offset_x, 0), mask=img_converted)
 
             out_io = io.BytesIO()
@@ -140,17 +142,23 @@ def build_panel_embeds(panel, banner_filename=None):
     banner_url = normalize_banner_url(panel.get('banner_url', '').strip()) if panel else ""
     embeds = []
 
+    # Невидимый распорочный символ U+2800 (Braille Blank), гарантирующий растягивание обоих Embed на одинаковую ширину в 520px
+    width_spacer = "\u2800" * 38
+
     if banner_filename:
         banner_embed = discord.Embed(color=0x2B2D31)
         banner_embed.set_image(url=f"attachment://{banner_filename}")
+        banner_embed.set_footer(text=width_spacer)
         embeds.append(banner_embed)
     elif banner_url:
         banner_embed = discord.Embed(color=0x2B2D31)
         banner_embed.set_image(url=banner_url)
+        banner_embed.set_footer(text=width_spacer)
         embeds.append(banner_embed)
 
+    full_desc = desc.rstrip() + f"\n\n{width_spacer}"
     desc_embed = discord.Embed(
-        description=desc,
+        description=full_desc,
         color=0x2B2D31
     )
     embeds.append(desc_embed)
