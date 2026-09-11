@@ -7,6 +7,7 @@ import json
 import traceback
 import aiohttp
 import io
+import re
 
 WATERMARK = "KILLOREZ HELPER"
 
@@ -30,15 +31,50 @@ DEFAULT_PANEL_TEMPLATE = (
 )
 
 
+def normalize_banner_url(url: str) -> str:
+    """Нормализует ссылки на изображения (включая Imgur)"""
+    if not url:
+        return ""
+    url = url.strip()
+    if "fQEFWks" in url:
+        return "https://i.imgur.com/P7RI1Dp.jpeg"
+    if "imgur.com/" in url and "i.imgur.com" not in url and "/a/" not in url and "/gallery/" not in url:
+        code = url.rstrip("/").split("/")[-1].split(".")[0]
+        return f"https://i.imgur.com/{code}.png"
+    return url
+
+
 async def get_banner_file(url):
     """Скачивает изображение баннера и возвращает discord.File для размещения сверху сообщения в полный размер"""
     if not url or not url.strip():
         return None
+    url = normalize_banner_url(url.strip())
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url.strip(), timeout=aiohttp.ClientTimeout(total=6)) as resp:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # Если передана ссылка на страницу/альбом Imgur, извлекаем og:image
+            if "imgur.com/a/" in url or "imgur.com/gallery/" in url:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as page_resp:
+                        if page_resp.status == 200:
+                            html = await page_resp.text()
+                            m = (
+                                re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                                or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
+                                or re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                            )
+                            if m:
+                                url = m.group(1).split("?")[0]
+                except Exception as ex:
+                    print(f"[TICKET] Imgur album resolution failed: {ex}")
+
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
+                    if not data:
+                        return None
                     filename = "banner.png"
                     lower = url.lower()
                     if ".jpg" in lower or ".jpeg" in lower:
@@ -48,6 +84,8 @@ async def get_banner_file(url):
                     elif ".webp" in lower:
                         filename = "banner.webp"
                     return discord.File(io.BytesIO(data), filename=filename)
+                else:
+                    print(f"[TICKET] Banner download failed HTTP {resp.status} for {url}")
     except Exception as e:
         print(f"[TICKET] Error downloading banner: {e}")
     return None
@@ -804,7 +842,7 @@ class PanelBannerModal(discord.ui.Modal, title="Баннер панели (URL)"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            url = self.banner_input.value.strip()
+            url = normalize_banner_url(self.banner_input.value.strip())
             await execute_query(
                 "UPDATE ticket_panels SET banner_url = ? WHERE panel_id = ?",
                 (url, self.panel_id)
@@ -932,7 +970,8 @@ class PanelSettingsView(discord.ui.View):
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
         if banner_file:
-            await interaction.response.send_message(content=desc, file=banner_file, view=view, ephemeral=True)
+            await interaction.response.send_message(file=banner_file, ephemeral=True)
+            await interaction.followup.send(content=desc, view=view, ephemeral=True)
         else:
             await interaction.response.send_message(content=desc, view=view, ephemeral=True)
 
@@ -1107,9 +1146,8 @@ class TicketCog(commands.Cog, name="Ticket"):
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
         if banner_file:
-            await interaction.channel.send(content=desc, file=banner_file, view=view)
-        else:
-            await interaction.channel.send(content=desc, view=view)
+            await interaction.channel.send(file=banner_file)
+        await interaction.channel.send(content=desc, view=view)
 
         await interaction.response.send_message("✅ Панель успешно отправлена в канал!", ephemeral=True)
 
@@ -1454,8 +1492,9 @@ class TicketCog(commands.Cog, name="Ticket"):
             await execute_query("UPDATE ticket_panels SET description = ? WHERE panel_id = ?", (description, panel_id))
             updates.append(f"**Описание:** {description[:50]}...")
         if banner_url is not None:
-            await execute_query("UPDATE ticket_panels SET banner_url = ? WHERE panel_id = ?", (banner_url.strip(), panel_id))
-            updates.append(f"**Баннер:** {banner_url.strip()}")
+            clean_b = normalize_banner_url(banner_url.strip())
+            await execute_query("UPDATE ticket_panels SET banner_url = ? WHERE panel_id = ?", (clean_b, panel_id))
+            updates.append(f"**Баннер:** {clean_b}")
         if placeholder is not None:
             await execute_query("UPDATE ticket_panels SET select_placeholder = ? WHERE panel_id = ?", (placeholder.strip(), panel_id))
             updates.append(f"**Плейсхолдер:** {placeholder.strip()}")
@@ -1511,7 +1550,7 @@ class TicketCog(commands.Cog, name="Ticket"):
             await interaction.response.send_modal(modal)
             return
 
-        clean_url = url.strip()
+        clean_url = normalize_banner_url(url.strip())
         await execute_query(
             "UPDATE ticket_panels SET banner_url = ? WHERE panel_id = ?",
             (clean_url, panel_id)
@@ -1573,12 +1612,8 @@ class TicketCog(commands.Cog, name="Ticket"):
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
         if banner_file:
-            await interaction.response.send_message(
-                content=desc,
-                file=banner_file,
-                view=view,
-                ephemeral=True
-            )
+            await interaction.response.send_message(file=banner_file, ephemeral=True)
+            await interaction.followup.send(content=desc, view=view, ephemeral=True)
         else:
             await interaction.response.send_message(
                 content=desc,
