@@ -109,9 +109,18 @@ async def init_db():
                 call_channels TEXT DEFAULT '[]',
                 admin_roles TEXT DEFAULT '[]',
                 log_channel_id BIGINT DEFAULT NULL,
-                category_id BIGINT DEFAULT NULL
+                category_id BIGINT DEFAULT NULL,
+                banner_url TEXT DEFAULT '',
+                select_placeholder TEXT DEFAULT 'Выберите семью для подачи заявки...'
             )
         ''')
+
+        # Миграции ticket_panels
+        try:
+            await conn.execute("ALTER TABLE ticket_panels ADD COLUMN IF NOT EXISTS banner_url TEXT DEFAULT ''")
+            await conn.execute("ALTER TABLE ticket_panels ADD COLUMN IF NOT EXISTS select_placeholder TEXT DEFAULT 'Выберите семью для подачи заявки...'")
+        except Exception:
+            pass
 
         # Active tickets
         await conn.execute('''
@@ -127,12 +136,6 @@ async def init_db():
         # Миграция: добавляем колонку panel_id если её нет
         try:
             await conn.execute('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS panel_id INTEGER DEFAULT NULL')
-        except Exception:
-            pass
-
-        # Миграция: добавляем колонку logo_url если её нет
-        try:
-            await conn.execute('ALTER TABLE ticket_panels ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT NULL')
         except Exception:
             pass
 

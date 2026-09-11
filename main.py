@@ -69,6 +69,18 @@ async def on_ready():
     log.info('=== БОТ ГОТОВ К РАБОТЕ ===')
 
 
+@bot.command(name="sync")
+@commands.has_permissions(administrator=True)
+async def sync_commands(ctx):
+    """Мгновенная синхронизация слэш-команд для текущего сервера"""
+    try:
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Мгновенно синхронизировано {len(synced)} слэш-команд для сервера **{ctx.guild.name}**!\nЕсли команды не появились в автокомплите — нажмите **Ctrl+R** в Discord.")
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка синхронизации: {e}")
+
+
 @bot.event
 async def on_command_error(ctx, error):
     log.warning(f'Command error: {error}')
