@@ -48,8 +48,8 @@ def normalize_banner_url(url: str) -> str:
     return url
 
 
-def make_wide_banner(image_bytes: bytes) -> io.BytesIO:
-    """Расширяет изображение до формата 16:9, чтобы Discord растягивал баннер на всю ширину текста в Embed"""
+def make_wide_banner(image_bytes: bytes, target_ratio: float = 2.3) -> io.BytesIO:
+    """Расширяет изображение до соотношения 2.3:1 (ультраширокий баннер), чтобы Discord растягивал баннер ровно на всю ширину текста в Embed"""
     if not Image:
         return io.BytesIO(image_bytes)
     try:
@@ -59,12 +59,12 @@ def make_wide_banner(image_bytes: bytes) -> io.BytesIO:
                 return io.BytesIO(image_bytes)
 
             ratio = w / h
-            # Если картинка уже достаточно широкая (16:9 или шире), не меняем её
-            if ratio >= 1.6:
+            # Если картинка уже достаточно широкая, не меняем её
+            if ratio >= target_ratio:
                 return io.BytesIO(image_bytes)
 
-            # Целевое соотношение: 16:9 (1.78)
-            target_w = int(h * (16.0 / 9.0))
+            # Целевое соотношение: 2.3:1 для гарантированного заполнения всей ширины блока с текстом
+            target_w = int(h * target_ratio)
             img_converted = img.convert("RGBA")
 
             # Определяем цвет фона по углам
