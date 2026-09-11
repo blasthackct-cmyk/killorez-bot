@@ -71,14 +71,28 @@ async def on_ready():
 
 @bot.command(name="sync")
 @commands.has_permissions(administrator=True)
-async def sync_commands(ctx):
-    """Мгновенная синхронизация слэш-команд для текущего сервера"""
+async def sync_commands(ctx, action: str = "clean"):
+    """
+    Управление синхронизацией команд:
+    !sync - очищает локальные дубликаты сервера, убирая двойные команды
+    !sync guild - привязать команды локально к серверу
+    """
     try:
-        bot.tree.copy_global_to(guild=ctx.guild)
-        synced = await bot.tree.sync(guild=ctx.guild)
-        await ctx.send(f"✅ Мгновенно синхронизировано {len(synced)} слэш-команд для сервера **{ctx.guild.name}**!\nЕсли команды не появились в автокомплите — нажмите **Ctrl+R** в Discord.")
+        if action.lower() == "guild":
+            bot.tree.copy_global_to(guild=ctx.guild)
+            synced = await bot.tree.sync(guild=ctx.guild)
+            await ctx.send(f"✅ Локально синхронизировано {len(synced)} команд для сервера **{ctx.guild.name}**.")
+        else:
+            # Очищаем локальные команды сервера, устраняя дублирование
+            bot.tree.clear_commands(guild=ctx.guild)
+            await bot.tree.sync(guild=ctx.guild)
+            await ctx.send(
+                f"🧹 **Дубликаты успешно удалены!**\n"
+                f"Локальные копии команд для сервера **{ctx.guild.name}** очищены.\n\n"
+                f"👉 Нажмите **Ctrl+R** в Discord, чтобы список команд обновился без повторов."
+            )
     except Exception as e:
-        await ctx.send(f"❌ Ошибка синхронизации: {e}")
+        await ctx.send(f"❌ Ошибка: {e}")
 
 
 @bot.event
