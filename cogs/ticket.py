@@ -5,6 +5,8 @@ from utils.database import fetch_one, fetch_all, execute_query
 from utils.embeds import create_embed, create_success_embed, create_error_embed, json_to_list, list_to_json, EMBED_GREEN, EMBED_RED, EMBED_PURPLE
 import json
 import traceback
+import aiohttp
+import io
 
 WATERMARK = "KILLOREZ HELPER"
 
@@ -28,8 +30,31 @@ DEFAULT_PANEL_TEMPLATE = (
 )
 
 
+async def get_banner_file(url):
+    """Скачивает изображение баннера и возвращает discord.File для размещения сверху сообщения в полный размер"""
+    if not url or not url.strip():
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url.strip(), timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    filename = "banner.png"
+                    lower = url.lower()
+                    if ".jpg" in lower or ".jpeg" in lower:
+                        filename = "banner.jpg"
+                    elif ".gif" in lower:
+                        filename = "banner.gif"
+                    elif ".webp" in lower:
+                        filename = "banner.webp"
+                    return discord.File(io.BytesIO(data), filename=filename)
+    except Exception as e:
+        print(f"[TICKET] Error downloading banner: {e}")
+    return None
+
+
 def build_panel_embed(panel):
-    """Формирует стильный Embed панели тикетов в стиле скриншота"""
+    """Формирует fallback Embed панели тикетов при необходимости"""
     desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
     embed = discord.Embed(
         description=desc,
@@ -897,14 +922,19 @@ class PanelSettingsView(discord.ui.View):
             embed = create_error_embed("Ошибка", "Панель не найдена!")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        embed = build_panel_embed(panel)
+
+        desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
         view = TicketSelectView(
             self.panel_id,
             panel.get('select_placeholder'),
             panel['name'],
             panel.get('button_emoji')
         )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        banner_file = await get_banner_file(panel.get('banner_url'))
+        if banner_file:
+            await interaction.response.send_message(content=desc, file=banner_file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(content=desc, view=view, ephemeral=True)
 
 
 # ==================== КОГ ====================
@@ -1068,14 +1098,20 @@ class TicketCog(commands.Cog, name="Ticket"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        embed = build_panel_embed(panel)
+        desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
         view = TicketSelectView(
             panel_id,
             panel.get('select_placeholder'),
             panel['name'],
             panel.get('button_emoji')
         )
-        await interaction.response.send_message(embed=embed, view=view)
+        banner_file = await get_banner_file(panel.get('banner_url'))
+        if banner_file:
+            await interaction.channel.send(content=desc, file=banner_file, view=view)
+        else:
+            await interaction.channel.send(content=desc, view=view)
+
+        await interaction.response.send_message("✅ Панель успешно отправлена в канал!", ephemeral=True)
 
     # ==================== УДАЛЕНИЕ ПАНЕЛИ ====================
 
@@ -1528,19 +1564,27 @@ class TicketCog(commands.Cog, name="Ticket"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        embed = build_panel_embed(panel)
+        desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
         view = TicketSelectView(
             panel_id,
             panel.get('select_placeholder'),
             panel['name'],
             panel.get('button_emoji')
         )
-        await interaction.response.send_message(
-            content="👁️ **Предпросмотр оформления панели (видите только вы):**",
-            embed=embed,
-            view=view,
-            ephemeral=True
-        )
+        banner_file = await get_banner_file(panel.get('banner_url'))
+        if banner_file:
+            await interaction.response.send_message(
+                content=desc,
+                file=banner_file,
+                view=view,
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                content=desc,
+                view=view,
+                ephemeral=True
+            )
 
     # ==================== ОБНОВЛЕНИЕ ОТПРАВЛЕННОГО СООБЩЕНИЯ ====================
 
@@ -1573,7 +1617,7 @@ class TicketCog(commands.Cog, name="Ticket"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        embed = build_panel_embed(panel)
+        desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
         view = TicketSelectView(
             panel_id,
             panel.get('select_placeholder'),
@@ -1581,8 +1625,9 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         try:
-            await msg.edit(embed=embed, view=view)
-            success_embed = create_success_embed("Сообщение обновлено", f"Сообщение {msg.jump_url} успешно обновлено новыми данными панели!")
+            # Обновляем текст и убираем старый узкий embed, если он был
+            await msg.edit(content=desc, embed=None, view=view)
+            success_embed = create_success_embed("Сообщение обновлено", f"Сообщение {msg.jump_url} успешно обновлено!")
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
         except Exception as e:
             embed = create_error_embed("Ошибка", f"Не удалось обновить сообщение: {e}")
