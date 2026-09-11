@@ -8,6 +8,10 @@ import traceback
 import aiohttp
 import io
 import re
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 WATERMARK = "KILLOREZ HELPER"
 
@@ -44,6 +48,52 @@ def normalize_banner_url(url: str) -> str:
     return url
 
 
+def make_wide_banner(image_bytes: bytes) -> io.BytesIO:
+    """Расширяет изображение до формата 16:9, чтобы Discord растягивал баннер на всю ширину текста в Embed"""
+    if not Image:
+        return io.BytesIO(image_bytes)
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            w, h = img.size
+            if w <= 0 or h <= 0:
+                return io.BytesIO(image_bytes)
+
+            ratio = w / h
+            # Если картинка уже достаточно широкая (16:9 или шире), не меняем её
+            if ratio >= 1.6:
+                return io.BytesIO(image_bytes)
+
+            # Целевое соотношение: 16:9 (1.78)
+            target_w = int(h * (16.0 / 9.0))
+            img_converted = img.convert("RGBA")
+
+            # Определяем цвет фона по углам
+            corners = [
+                img_converted.getpixel((0, 0)),
+                img_converted.getpixel((w - 1, 0)),
+                img_converted.getpixel((0, h - 1)),
+                img_converted.getpixel((w - 1, h - 1))
+            ]
+
+            # Если в углах есть прозрачность, берем цвет фона Discord Embed (43, 45, 49)
+            if any(c[3] < 128 for c in corners):
+                bg_color = (43, 45, 49, 255)
+            else:
+                bg_color = corners[0]
+
+            canvas = Image.new("RGBA", (target_w, h), bg_color)
+            offset_x = (target_w - w) // 2
+            canvas.paste(img_converted, (offset_x, 0), mask=img_converted)
+
+            out_io = io.BytesIO()
+            canvas.save(out_io, format="PNG")
+            out_io.seek(0)
+            return out_io
+    except Exception as e:
+        print(f"[TICKET] make_wide_banner error: {e}")
+        return io.BytesIO(image_bytes)
+
+
 async def get_banner_file(url):
     """Скачивает изображение баннера и возвращает discord.File для размещения сверху сообщения в полный размер"""
     if not url or not url.strip():
@@ -75,15 +125,8 @@ async def get_banner_file(url):
                     data = await resp.read()
                     if not data:
                         return None
-                    filename = "banner.png"
-                    lower = url.lower()
-                    if ".jpg" in lower or ".jpeg" in lower:
-                        filename = "banner.jpg"
-                    elif ".gif" in lower:
-                        filename = "banner.gif"
-                    elif ".webp" in lower:
-                        filename = "banner.webp"
-                    return discord.File(io.BytesIO(data), filename=filename)
+                    processed_io = make_wide_banner(data)
+                    return discord.File(processed_io, filename="banner.png")
                 else:
                     print(f"[TICKET] Banner download failed HTTP {resp.status} for {url}")
     except Exception as e:
