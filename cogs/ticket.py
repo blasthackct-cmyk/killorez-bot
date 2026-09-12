@@ -145,43 +145,38 @@ async def get_banner_file(url):
     return None
 
 
-def build_panel_embeds(panel, banner_filename=None):
-    """Формирует список Embed: верхний с баннером (если есть) и нижний с текстом на фоне embed в 1 сообщении"""
-    desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
+def build_panel_embed_banner(panel, banner_filename=None):
+    """Формирует верхний Embed с баннером/логотипом (1-е сообщение)"""
     banner_url = normalize_banner_url(panel.get('banner_url', '').strip()) if panel else ""
-    embeds = []
-
-    # Невидимый распорочный символ U+2800 (Braille Blank), снимающий лимит в 300px и растягивающий оба Embed ровно на 520px
-    width_spacer = "\u2800" * 65
-
     if banner_filename:
-        banner_embed = discord.Embed(
-            description=width_spacer,
-            color=0x2B2D31
-        )
+        banner_embed = discord.Embed(color=0x2B2D31)
         banner_embed.set_image(url=f"attachment://{banner_filename}")
-        embeds.append(banner_embed)
+        return banner_embed
     elif banner_url:
-        banner_embed = discord.Embed(
-            description=width_spacer,
-            color=0x2B2D31
-        )
+        banner_embed = discord.Embed(color=0x2B2D31)
         banner_embed.set_image(url=banner_url)
-        embeds.append(banner_embed)
+        return banner_embed
+    return None
 
-    full_desc = desc.rstrip() + f"\n\n{width_spacer}"
+
+def build_panel_embed_desc(panel):
+    """Формирует нижний Embed с текстом описания (2-е сообщение)"""
+    desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
     desc_embed = discord.Embed(
-        description=full_desc,
+        description=desc,
         color=0x2B2D31
     )
-    embeds.append(desc_embed)
-    return embeds
+    return desc_embed
+
+
+def build_panel_embeds(panel, banner_filename=None):
+    """Возвращает кортеж (banner_embed, desc_embed) для раздельной отправки в 2 сообщения"""
+    return build_panel_embed_banner(panel, banner_filename), build_panel_embed_desc(panel)
 
 
 def build_panel_embed(panel):
     """Формирует fallback Embed панели тикетов при необходимости"""
-    embeds = build_panel_embeds(panel)
-    return embeds[-1] if embeds else discord.Embed(description=DEFAULT_PANEL_TEMPLATE, color=0x2B2D31)
+    return build_panel_embed_desc(panel)
 
 
 # ==================== МОДАЛ АНКЕТЫ (до 5 вопросов) ====================
@@ -1049,11 +1044,15 @@ class PanelSettingsView(discord.ui.View):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        embeds = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_file:
-            await interaction.response.send_message(embeds=embeds, file=banner_file, view=view, ephemeral=True)
+        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
+        if banner_embed:
+            if banner_file:
+                await interaction.response.send_message(embed=banner_embed, file=banner_file, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=banner_embed, ephemeral=True)
+            await interaction.followup.send(embed=desc_embed, view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(embeds=embeds, view=view, ephemeral=True)
+            await interaction.response.send_message(embed=desc_embed, view=view, ephemeral=True)
 
 
 # ==================== КОГ ====================
@@ -1225,11 +1224,13 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        embeds = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_file:
-            await interaction.channel.send(embeds=embeds, file=banner_file, view=view)
-        else:
-            await interaction.channel.send(embeds=embeds, view=view)
+        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
+        if banner_embed:
+            if banner_file:
+                await interaction.channel.send(embed=banner_embed, file=banner_file)
+            else:
+                await interaction.channel.send(embed=banner_embed)
+        await interaction.channel.send(embed=desc_embed, view=view)
 
         await interaction.response.send_message("✅ Панель успешно отправлена в канал!", ephemeral=True)
 
@@ -1693,17 +1694,27 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        embeds = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_file:
-            await interaction.response.send_message(
-                embeds=embeds,
-                file=banner_file,
+        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
+        if banner_embed:
+            if banner_file:
+                await interaction.response.send_message(
+                    embed=banner_embed,
+                    file=banner_file,
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    embed=banner_embed,
+                    ephemeral=True
+                )
+            await interaction.followup.send(
+                embed=desc_embed,
                 view=view,
                 ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                embeds=embeds,
+                embed=desc_embed,
                 view=view,
                 ephemeral=True
             )
@@ -1747,12 +1758,9 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        embeds = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
+        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
         try:
-            if banner_file:
-                await msg.edit(content=None, embeds=embeds, attachments=[banner_file], view=view)
-            else:
-                await msg.edit(content=None, embeds=embeds, view=view)
+            await msg.edit(content=None, embed=desc_embed, view=view)
             success_embed = create_success_embed("Сообщение обновлено", f"Сообщение {msg.jump_url} успешно обновлено!")
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
         except Exception as e:
