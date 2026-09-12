@@ -15,25 +15,20 @@ except ImportError:
 
 WATERMARK = "KILLOREZ HELPER"
 
-PANEL_SPLIT_MARKER = "---SPLIT---"
-
 DEFAULT_PANEL_TEMPLATE = (
     "📢 **Открыты заявки на вступление в семью!**\n\n"
     "> Заявки в семью принимаются только на сервер **Rockford**.\n"
-    "> Возраст для рассмотрения заявки: от **13 лет**.\n"
-    "---SPLIT---"
+    "> Возраст для рассмотрения заявки: от **13 лет**.\n\n"
     "**Срок рассмотрения заявок:** от пары часов до **1 дня**.\n"
     "Решение направляется ботом в **личные сообщения + в ветку тикета**, где вас пригласят на **собеседование**. "
     "Отсутствие ответа в течение **24 часов** приводит к автоматическому закрытию тикета.\n\n"
-    "Внимательно прочитайте шаблон заявки при её подаче.\n"
-    "---SPLIT---"
+    "Внимательно прочитайте шаблон заявки при её подаче.\n\n"
     "**Дополнительные требования:**\n"
     "• Откаты с DM должны быть записаны **не более 1 недели** назад;\n"
     "• Минимальное кол-во людей на DM — **2 человек**;\n"
     "• Минимальная продолжительность DM — **5 минут**;\n"
     "• Видео-откат загружен на **YouTube / RuTube / Google Диск / Яндекс Диск**.\n\n"
-    "> После подачи заявки следите за **ЛС** или за **сгенерированным тикетом** на общение от следящих.\n"
-    "---SPLIT---"
+    "> После подачи заявки следите за **ЛС** или за **сгенерированным тикетом** на общение от следящих.\n\n"
     "Ознакомьтесь с условиями выше и нажмите кнопку ниже ↓"
 )
 
@@ -164,36 +159,19 @@ def build_panel_embed_banner(panel, banner_filename=None):
     return None
 
 
-def build_panel_desc_embeds(panel):
-    """Формирует список Embed'ов из описания, разбивая по ---SPLIT--- маркерам.
-    Discord автоматически рисует тонкие серые линии между embed'ами в одном сообщении."""
-    desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
-    parts = desc.split(PANEL_SPLIT_MARKER)
-    embeds = []
-    for part in parts:
-        part = part.strip()
-        if part:
-            embeds.append(discord.Embed(description=part, color=0x2B2D31))
-    if not embeds:
-        embeds.append(discord.Embed(description=desc, color=0x2B2D31))
-    return embeds
-
-
 def build_panel_embed_desc(panel):
-    """Формирует один Embed с текстом описания (обратная совместимость, без разделителей)"""
+    """Формирует Embed с текстом описания панели"""
     desc = panel['description'] if (panel and panel.get('description')) else DEFAULT_PANEL_TEMPLATE
-    # Убираем маркеры разделителей для single-embed случаев
-    clean_desc = desc.replace(PANEL_SPLIT_MARKER, "\n")
     desc_embed = discord.Embed(
-        description=clean_desc,
+        description=desc,
         color=0x2B2D31
     )
     return desc_embed
 
 
 def build_panel_embeds(panel, banner_filename=None):
-    """Возвращает кортеж (banner_embed, desc_embeds_list) для раздельной отправки"""
-    return build_panel_embed_banner(panel, banner_filename), build_panel_desc_embeds(panel)
+    """Возвращает кортеж (banner_embed, desc_embed) для раздельной отправки"""
+    return build_panel_embed_banner(panel, banner_filename), build_panel_embed_desc(panel)
 
 
 def build_panel_embed(panel):
@@ -1066,15 +1044,15 @@ class PanelSettingsView(discord.ui.View):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        desc_embeds = build_panel_desc_embeds(panel)
+        desc_embed = build_panel_embed_desc(panel)
         if banner_file:
             await interaction.response.send_message(file=banner_file, ephemeral=True)
-            await interaction.followup.send(embeds=desc_embeds, view=view, ephemeral=True)
+            await interaction.followup.send(embed=desc_embed, view=view, ephemeral=True)
         elif panel.get('banner_url'):
             await interaction.response.send_message(content=panel['banner_url'], ephemeral=True)
-            await interaction.followup.send(embeds=desc_embeds, view=view, ephemeral=True)
+            await interaction.followup.send(embed=desc_embed, view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(embeds=desc_embeds, view=view, ephemeral=True)
+            await interaction.response.send_message(embed=desc_embed, view=view, ephemeral=True)
 
 
 # ==================== КОГ ====================
@@ -1255,14 +1233,14 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        desc_embeds = build_panel_desc_embeds(panel)
+        desc_embed = build_panel_embed_desc(panel)
 
         if banner_file:
             await interaction.channel.send(file=banner_file)
         elif panel.get('banner_url'):
             await interaction.channel.send(content=panel['banner_url'])
 
-        await interaction.channel.send(embeds=desc_embeds, view=view)
+        await interaction.channel.send(embed=desc_embed, view=view)
 
         await interaction.response.send_message("✅ Панель успешно отправлена в канал!", ephemeral=True)
 
@@ -1750,14 +1728,14 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        desc_embeds = build_panel_desc_embeds(panel)
+        desc_embed = build_panel_embed_desc(panel)
         if banner_file:
             await interaction.response.send_message(
                 file=banner_file,
                 ephemeral=True
             )
             await interaction.followup.send(
-                embeds=desc_embeds,
+                embed=desc_embed,
                 view=view,
                 ephemeral=True
             )
@@ -1767,13 +1745,13 @@ class TicketCog(commands.Cog, name="Ticket"):
                 ephemeral=True
             )
             await interaction.followup.send(
-                embeds=desc_embeds,
+                embed=desc_embed,
                 view=view,
                 ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                embeds=desc_embeds,
+                embed=desc_embed,
                 view=view,
                 ephemeral=True
             )
@@ -1816,9 +1794,9 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel['name'],
             panel.get('button_emoji')
         )
-        desc_embeds = build_panel_desc_embeds(panel)
+        desc_embed = build_panel_embed_desc(panel)
         try:
-            await msg.edit(content=None, embeds=desc_embeds, view=view)
+            await msg.edit(content=None, embed=desc_embed, view=view)
             success_embed = create_success_embed("Сообщение обновлено", f"Сообщение {msg.jump_url} успешно обновлено!")
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
         except Exception as e:
