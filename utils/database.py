@@ -119,6 +119,7 @@ async def init_db():
         try:
             await conn.execute("ALTER TABLE ticket_panels ADD COLUMN IF NOT EXISTS banner_url TEXT DEFAULT ''")
             await conn.execute("ALTER TABLE ticket_panels ADD COLUMN IF NOT EXISTS select_placeholder TEXT DEFAULT 'Выберите семью для подачи заявки...'")
+            await conn.execute("UPDATE ticket_panels SET banner_url = '' WHERE banner_url LIKE '%AlIAm86%' OR banner_url LIKE '%BlAM6rQ%' OR banner_url LIKE '%fQEFWks%'")
         except Exception:
             pass
 

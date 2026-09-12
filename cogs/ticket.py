@@ -40,12 +40,6 @@ def normalize_banner_url(url: str) -> str:
     if not url:
         return ""
     url = url.strip()
-    if "AlIAm86" in url:
-        return "https://i.imgur.com/AlIAm86.png"
-    if "BlAM6rQ" in url:
-        return "https://i.imgur.com/0pptHC0.jpeg"
-    if "fQEFWks" in url:
-        return "https://i.imgur.com/P7RI1Dp.jpeg"
     if "imgur.com/" in url and "i.imgur.com" not in url and "/a/" not in url and "/gallery/" not in url:
         code = url.rstrip("/").split("/")[-1].split(".")[0]
         return f"https://i.imgur.com/{code}.png"
@@ -125,33 +119,24 @@ async def get_banner_file(url=None):
     """
     Возвращает discord.File для размещения логотипа сверху сообщения.
     Приоритет:
-    1. Локальный путь на диске.
-    2. Если url пустой -> автоподхват локального логотипа assets/killorez_logo.png!
-    3. Скачивание онлайн-ссылки.
-    4. Фолбэк на локальный логотип, если онлайн-ссылка сломалась.
+    1. Локальный логотип из assets/ (assets/killorez_logo.png) ВСЕГДА в первую очередь!
+    2. Если локального файла нет -> пробуем скачать по url.
     """
-    # 1. Локальный файл передан в качестве url
-    if url and os.path.exists(str(url)) and os.path.isfile(str(url)):
-        ext = os.path.splitext(str(url))[1].lstrip('.').lower() or 'png'
+    # 1. ВСЕГДА отдаем локальный логотип, если он есть на диске
+    local_path = get_local_logo_path()
+    if local_path and os.path.exists(local_path):
+        ext = os.path.splitext(local_path)[1].lstrip('.').lower() or 'png'
         try:
-            with open(str(url), 'rb') as f:
-                return discord.File(io.BytesIO(f.read()), filename=f"logo.{ext}")
+            with open(local_path, 'rb') as f:
+                return discord.File(io.BytesIO(f.read()), filename=f"killorez_logo.{ext}")
         except Exception as e:
-            print(f"[TICKET] Error reading local banner: {e}")
+            print(f"[TICKET] Error reading local logo: {e}")
 
-    # 2. Автоподхват локального логотипа, если url пустой
+    # 2. Если локального логотипа нет на диске и url пустой
     if not url or not str(url).strip():
-        local_path = get_local_logo_path()
-        if local_path and os.path.exists(local_path):
-            ext = os.path.splitext(local_path)[1].lstrip('.').lower() or 'png'
-            try:
-                with open(local_path, 'rb') as f:
-                    return discord.File(io.BytesIO(f.read()), filename=f"logo.{ext}")
-            except Exception as e:
-                print(f"[TICKET] Error reading auto-logo: {e}")
         return None
 
-    # 3. Скачивание по онлайн-ссылке
+    # 3. Скачивание по онлайн-ссылке (только если локального файла нет)
     url_str = normalize_banner_url(str(url).strip())
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
