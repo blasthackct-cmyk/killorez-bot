@@ -39,6 +39,8 @@ VZH_MAPS = [
 ]
 
 MAPS_DIR = os.path.join(os.getcwd(), "assets", "maps")
+DARK_EMBED_COLOR = 0x2B2D31
+DIVIDER_LINE = "────────────────────────────────────────"
 
 
 async def is_mp_organizer(interaction: discord.Interaction) -> bool:
@@ -96,7 +98,6 @@ def find_map_file(map_name: str):
 class MpRoleSelect(discord.ui.RoleSelect):
     """Выпадающее меню для выбора нескольких ролей организаторов сразу."""
     def __init__(self, current_roles: list):
-        default_roles = []
         super().__init__(
             placeholder="Выберите роли организаторов (можно несколько)...",
             min_values=0,
@@ -136,36 +137,21 @@ class MpRoleSelectView(discord.ui.View):
         self.add_item(MpRoleSelect(current_roles))
 
 
-class MpRegistrationView(discord.ui.View):
-    """View для набора участников МП с кнопками и меню перемещения в основу."""
-
-    def __init__(self, session_id: int, cog):
-        super().__init__(timeout=None)
+class MpOrganizerControlView(discord.ui.View):
+    """Панель управления набором (открывается по кнопке '⚙️ Ещё' для организаторов)."""
+    def __init__(self, session_id: int, cog, session: dict, guild: discord.Guild):
+        super().__init__(timeout=300)
         self.session_id = session_id
         self.cog = cog
-
-    async def update_view_items(self, session: dict, guild: discord.Guild):
-        """Динамически обновляет выпадающий список поднятия в основу."""
-        self.clear_items()
-
-        # Кнопка записи / выписки
-        signup_btn = discord.ui.Button(
-            label="Записаться / Выписаться",
-            emoji="📝",
-            style=discord.ButtonStyle.primary,
-            custom_id=f"mp_signup_{self.session_id}"
-        )
-        signup_btn.callback = self.on_signup_clicked
-        self.add_item(signup_btn)
 
         reserve_list = json_to_list(session['reserve_list'])
         main_list = json_to_list(session['main_list'])
         main_slots = session['main_slots']
 
-        # Если есть резерв и в основе есть места — выпадающее меню для организатора
+        # Меню переноса из запаса в основу
         if reserve_list and len(main_list) < main_slots:
             options = []
-            for uid in reserve_list[:25]:  # Discord лимит 25 пунктов
+            for uid in reserve_list[:25]:
                 member = guild.get_member(uid)
                 name = member.display_name if member else f"ID: {uid}"
                 options.append(discord.SelectOption(
@@ -173,61 +159,78 @@ class MpRegistrationView(discord.ui.View):
                     value=str(uid),
                     emoji="⬆️"
                 ))
-
             if options:
                 promote_select = discord.ui.Select(
-                    placeholder="⬆️ Поднять в основной состав (Организатор)",
+                    placeholder="⬆️ Поднять в основной состав",
                     min_values=1,
                     max_values=1,
                     options=options,
-                    custom_id=f"mp_promote_{self.session_id}"
+                    row=0
                 )
                 promote_select.callback = self.on_promote_selected
                 self.add_item(promote_select)
 
-        # Кнопка отмены набора (для организаторов)
-        cancel_btn = discord.ui.Button(
-            label="Отменить набор",
-            emoji="❌",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"mp_cancel_{self.session_id}"
-        )
-        cancel_btn.callback = self.on_cancel_clicked
-        self.add_item(cancel_btn)
+        # Меню возврата из основы в запас
+        if main_list:
+            options_demote = []
+            for uid in main_list[:25]:
+                member = guild.get_member(uid)
+                name = member.display_name if member else f"ID: {uid}"
+                options_demote.append(discord.SelectOption(
+                    label=name[:100],
+                    value=str(uid),
+                    emoji="⬇️"
+                ))
+            if options_demote:
+                demote_select = discord.ui.Select(
+                    placeholder="⬇️ Вернуть в запасной состав",
+                    min_values=1,
+                    max_values=1,
+                    options=options_demote,
+                    row=1
+                )
+                demote_select.callback = self.on_demote_selected
+                self.add_item(demote_select)
 
-    async def on_signup_clicked(self, interaction: discord.Interaction):
-        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
-        if not session or not session['is_active']:
-            await interaction.response.send_message("Этот набор уже завершён или не активен!", ephemeral=True)
+    @discord.ui.button(label="🚀 Запустить МП", style=discord.ButtonStyle.success, row=2)
+    async def start_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await is_mp_organizer(interaction):
+            await interaction.response.send_message("❌ Только организаторы могут запустить МП!", ephemeral=True)
             return
 
-        main_list = json_to_list(session['main_list'])
-        reserve_list = json_to_list(session['reserve_list'])
-        user_id = interaction.user.id
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ? AND is_active = 1", (self.session_id,))
+        if not session:
+            await interaction.response.send_message("Набор не найден или уже завершён.", ephemeral=True)
+            return
 
-        # Если уже записан в основу или резерв — выписываем
-        if user_id in main_list:
-            main_list.remove(user_id)
-            await execute_query("UPDATE mp_sessions SET main_list = ? WHERE session_id = ?", (list_to_json(main_list), self.session_id))
-            await interaction.response.send_message("Вы выписались из основного состава.", ephemeral=True)
-        elif user_id in reserve_list:
-            reserve_list.remove(user_id)
-            await execute_query("UPDATE mp_sessions SET reserve_list = ? WHERE session_id = ?", (list_to_json(reserve_list), self.session_id))
-            await interaction.response.send_message("Вы выписались из запасного состава.", ephemeral=True)
-        else:
-            # Записываем в резерв
-            if len(reserve_list) >= session['reserve_slots']:
-                await interaction.response.send_message("Запасной состав уже полностью заполнен!", ephemeral=True)
-                return
-            reserve_list.append(user_id)
-            await execute_query("UPDATE mp_sessions SET reserve_list = ? WHERE session_id = ?", (list_to_json(reserve_list), self.session_id))
-            await interaction.response.send_message("Вы успешно записались в запасной состав! Ожидайте решения организатора.", ephemeral=True)
+        # Запускаем старт через ког
+        await self.cog.start_session_from_button(interaction, session)
 
-        await self.cog.refresh_nabor_message(self.session_id, interaction.guild)
+    @discord.ui.button(label="🛑 Отменить набор", style=discord.ButtonStyle.danger, row=2)
+    async def cancel_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await is_mp_organizer(interaction):
+            await interaction.response.send_message("❌ Только организаторы могут отменить набор!", ephemeral=True)
+            return
+
+        await execute_query("UPDATE mp_sessions SET is_active = 0 WHERE session_id = ?", (self.session_id,))
+        embed = create_error_embed("Набор отменён", f"Организатор {interaction.user.mention} отменил этот набор.")
+
+        # Обновляем главное сообщение
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if session and session['message_id']:
+            channel = interaction.guild.get_channel(session['channel_id'])
+            if channel:
+                try:
+                    msg = await channel.fetch_message(session['message_id'])
+                    await msg.edit(embed=embed, view=None)
+                except Exception:
+                    pass
+
+        await interaction.response.edit_message(content="Набор успешно отменён.", embed=None, view=None)
 
     async def on_promote_selected(self, interaction: discord.Interaction):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("❌ У вас нет прав организатора МП для перемещения участников!", ephemeral=True)
+            await interaction.response.send_message("❌ У вас нет прав организатора!", ephemeral=True)
             return
 
         session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
@@ -257,14 +260,140 @@ class MpRegistrationView(discord.ui.View):
         else:
             await interaction.response.send_message("Участник больше не находится в запасном списке.", ephemeral=True)
 
-    async def on_cancel_clicked(self, interaction: discord.Interaction):
+    async def on_demote_selected(self, interaction: discord.Interaction):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("❌ Только организаторы могут отменить набор!", ephemeral=True)
+            await interaction.response.send_message("❌ У вас нет прав организатора!", ephemeral=True)
             return
 
-        await execute_query("UPDATE mp_sessions SET is_active = 0 WHERE session_id = ?", (self.session_id,))
-        embed = create_error_embed("Набор отменён", f"Организатор {interaction.user.mention} отменил этот набор.")
-        await interaction.response.edit_message(embed=embed, view=None)
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if not session or not session['is_active']:
+            await interaction.response.send_message("Набор не активен!", ephemeral=True)
+            return
+
+        main_list = json_to_list(session['main_list'])
+        reserve_list = json_to_list(session['reserve_list'])
+
+        selected_uid = int(interaction.data['values'][0])
+        if selected_uid in main_list:
+            main_list.remove(selected_uid)
+            if selected_uid not in reserve_list:
+                reserve_list.append(selected_uid)
+            await execute_query(
+                "UPDATE mp_sessions SET main_list = ?, reserve_list = ? WHERE session_id = ?",
+                (list_to_json(main_list), list_to_json(reserve_list), self.session_id)
+            )
+            member = interaction.guild.get_member(selected_uid)
+            name = member.mention if member else f"<@{selected_uid}>"
+            await interaction.response.send_message(f"Участник {name} возвращён в **запасной состав**! ⬇️", ephemeral=True)
+            await self.cog.refresh_nabor_message(self.session_id, interaction.guild)
+        else:
+            await interaction.response.send_message("Участник больше не находится в основном списке.", ephemeral=True)
+
+
+class MpRegistrationView(discord.ui.View):
+    """
+    View для набора участников МП.
+    Полностью повторяет интерфейс Requiem:
+    Ряд 1: [✅ Участвовать] [❌ Покинуть] [🌌 Отметиться]
+    Ряд 2: [⚙️ Ещё]
+    """
+
+    def __init__(self, session_id: int, cog):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.cog = cog
+
+    @discord.ui.button(label="Участвовать", emoji="✅", style=discord.ButtonStyle.success, row=0, custom_id="mp_btn_join")
+    async def join_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if not session or not session['is_active']:
+            await interaction.response.send_message("Этот набор уже завершён или не активен!", ephemeral=True)
+            return
+
+        main_list = json_to_list(session['main_list'])
+        reserve_list = json_to_list(session['reserve_list'])
+        user_id = interaction.user.id
+
+        if user_id in main_list:
+            await interaction.response.send_message("Вы уже находитесь в основном составе!", ephemeral=True)
+            return
+
+        if user_id in reserve_list:
+            await interaction.response.send_message("Вы уже записаны в запасной состав!", ephemeral=True)
+            return
+
+        if len(reserve_list) >= session['reserve_slots']:
+            await interaction.response.send_message("Запасной состав уже полностью заполнен!", ephemeral=True)
+            return
+
+        reserve_list.append(user_id)
+        await execute_query("UPDATE mp_sessions SET reserve_list = ? WHERE session_id = ?", (list_to_json(reserve_list), self.session_id))
+        await interaction.response.send_message("Вы успешно записались в запасной состав! Ожидайте распределения организатором.", ephemeral=True)
+
+        await self.cog.refresh_nabor_message(self.session_id, interaction.guild)
+
+    @discord.ui.button(label="Покинуть", emoji="❌", style=discord.ButtonStyle.danger, row=0, custom_id="mp_btn_leave")
+    async def leave_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if not session or not session['is_active']:
+            await interaction.response.send_message("Этот набор не активен.", ephemeral=True)
+            return
+
+        main_list = json_to_list(session['main_list'])
+        reserve_list = json_to_list(session['reserve_list'])
+        user_id = interaction.user.id
+
+        if user_id in main_list:
+            main_list.remove(user_id)
+            await execute_query("UPDATE mp_sessions SET main_list = ? WHERE session_id = ?", (list_to_json(main_list), self.session_id))
+            await interaction.response.send_message("Вы покинули основной состав.", ephemeral=True)
+            await self.cog.refresh_nabor_message(self.session_id, interaction.guild)
+        elif user_id in reserve_list:
+            reserve_list.remove(user_id)
+            await execute_query("UPDATE mp_sessions SET reserve_list = ? WHERE session_id = ?", (list_to_json(reserve_list), self.session_id))
+            await interaction.response.send_message("Вы покинули запасной состав.", ephemeral=True)
+            await self.cog.refresh_nabor_message(self.session_id, interaction.guild)
+        else:
+            await interaction.response.send_message("Вы не состоите ни в основном, ни в запасном составе.", ephemeral=True)
+
+    @discord.ui.button(label="Отметиться", emoji="🌌", style=discord.ButtonStyle.primary, row=0, custom_id="mp_btn_checkin")
+    async def checkin_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if not session or not session['is_active']:
+            await interaction.response.send_message("Набор не активен.", ephemeral=True)
+            return
+
+        main_list = json_to_list(session['main_list'])
+        reserve_list = json_to_list(session['reserve_list'])
+        user_id = interaction.user.id
+
+        if user_id in main_list:
+            await interaction.response.send_message(f"Вы подтвердили своё присутствие в **основном составе**! 🌌", ephemeral=True)
+        elif user_id in reserve_list:
+            await interaction.response.send_message(f"Вы подтвердили своё присутствие в **запасном составе**! 🌌", ephemeral=True)
+        else:
+            await interaction.response.send_message("Сначала запишитесь на мероприятие, нажав кнопку «Участвовать»!", ephemeral=True)
+
+    @discord.ui.button(label="Ещё", emoji="⚙️", style=discord.ButtonStyle.secondary, row=1, custom_id="mp_btn_more")
+    async def more_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await is_mp_organizer(interaction):
+            await interaction.response.send_message("❌ Панель управления доступна только организаторам и администраторам.", ephemeral=True)
+            return
+
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
+        if not session or not session['is_active']:
+            await interaction.response.send_message("Набор не активен.", ephemeral=True)
+            return
+
+        view = MpOrganizerControlView(self.session_id, self.cog, session, interaction.guild)
+        embed = create_embed(
+            title=f"⚙️ Панель управления набором ({session['event_type']})",
+            description=(
+                "Здесь вы можете перемещать игроков между составами, запустить создание ветки с выбором карт или отменить набор."
+            ),
+            color=DARK_EMBED_COLOR
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class MpTypeSelectView(discord.ui.View):
@@ -290,7 +419,7 @@ class MpTypeSelectView(discord.ui.View):
                 f"После выбора карты запустите `/mp position [кол-во]`, чтобы открыть табло позиций.\n"
                 f"Для досрочного завершения используйте `/mp stop`."
             ),
-            color=EMBED_PURPLE
+            color=DARK_EMBED_COLOR
         )
         map_view = MpMapSelectView(self.cog, self.session_id, VZP_MAPS)
         await interaction.response.edit_message(embed=embed, view=map_view)
@@ -311,7 +440,7 @@ class MpTypeSelectView(discord.ui.View):
                 f"После выбора карты запустите `/mp position [кол-во]`, чтобы открыть табло позиций.\n"
                 f"Для досрочного завершения используйте `/mp stop`."
             ),
-            color=EMBED_GREEN
+            color=DARK_EMBED_COLOR
         )
         map_view = MpMapSelectView(self.cog, self.session_id, VZH_MAPS)
         await interaction.response.edit_message(embed=embed, view=map_view)
@@ -326,7 +455,6 @@ class MpMapButton(discord.ui.Button):
         self.session_id = session_id
 
     async def callback(self, interaction: discord.Interaction):
-        # Строгая проверка: карту могут выбирать ТОЛЬКО администраторы и выборочные роли организаторов
         if not await is_mp_organizer(interaction):
             await interaction.response.send_message(
                 "❌ **Доступ запрещён!** Выбирать карту могут только организаторы с назначенной ролью или администраторы.",
@@ -336,7 +464,6 @@ class MpMapButton(discord.ui.Button):
 
         await execute_query("UPDATE mp_sessions SET selected_map = ? WHERE session_id = ?", (self.map_name, self.session_id))
 
-        # Ищем изображение карты
         map_path = find_map_file(self.map_name)
 
         embed = create_embed(
@@ -346,7 +473,7 @@ class MpMapButton(discord.ui.Button):
                 f"👉 Запустите `/mp position [кол-во]`, чтобы участники основы могли занимать позиции!\n"
                 f"👉 Для завершения МП напишите `/mp stop`."
             ),
-            color=EMBED_PURPLE
+            color=DARK_EMBED_COLOR
         )
 
         if map_path and os.path.exists(map_path):
@@ -384,12 +511,10 @@ class MpMapSelectView(discord.ui.View):
     """Сетка кнопок карт для выбранного режима + кнопка завершения."""
     def __init__(self, cog, session_id: int, maps: list):
         super().__init__(timeout=None)
-        # До 4 кнопок в ряду
         for i, map_name in enumerate(maps):
             row = min(i // 4, 3)
             self.add_item(MpMapButton(map_name, cog, session_id, row=row))
 
-        # Добавляем кнопку завершения МП на последний ряд
         self.add_item(MpEndButton(cog, session_id, row=4))
 
 
@@ -400,7 +525,6 @@ class MpMapSelectView(discord.ui.View):
 class MPCog(commands.Cog, name="MP"):
     def __init__(self, bot):
         self.bot = bot
-        # Словарь активных сессий позиций: thread_id -> session_id
         self.active_position_sessions = {}
         self.archive_check_loop.start()
 
@@ -438,7 +562,7 @@ class MPCog(commands.Cog, name="MP"):
                 "• Запускать распределение позиций (`/mp position`)\n"
                 "• Завершать мероприятие (`/mp stop`)"
             ),
-            color=EMBED_COLOR
+            color=DARK_EMBED_COLOR
         )
         view = MpRoleSelectView(current_roles)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -546,21 +670,29 @@ class MPCog(commands.Cog, name="MP"):
                 cat = interaction.guild.get_channel(settings['archive_category_id'])
                 archive_category = cat.name if cat else f"ID: {settings['archive_category_id']} (не найдена)"
 
-        embed = create_embed(title="⚙️ Настройки системы МП", color=EMBED_COLOR)
+        embed = create_embed(title="⚙️ Настройки системы МП", color=DARK_EMBED_COLOR)
         embed.add_field(name=f"🛡️ Роли организаторов ({len(roles)})", value=role_mentions, inline=False)
         embed.add_field(name="📁 Категория архива", value=archive_category, inline=False)
 
-        # Добавляем интерактивное меню настройки ролей
         view = MpRoleSelectView(roles)
         await interaction.response.send_message(embed=embed, view=view)
 
     # ------------------ /MP NABOR ------------------
-    @mp.command(name="nabor", description="Открыть набор на мероприятие (ВЗП / ВЗХ)")
+    @mp.command(name="nabor", description="Открыть набор на мероприятие (ВЗХ / ВЗП)")
     @app_commands.describe(
-        main_slots="Количество мест основного состава",
-        reserve_slots="Количество мест запасного состава"
+        main_slots="Количество мест основного состава (по умолчанию 40)",
+        reserve_slots="Количество мест запасного состава (по умолчанию 25)",
+        event_type="Тип мероприятия (ВЗХ или ВЗП, по умолчанию ВЗХ)",
+        time="Время проведения (например: Сегодня 19:00)"
     )
-    async def mp_nabor(self, interaction: discord.Interaction, main_slots: int, reserve_slots: int):
+    async def mp_nabor(
+        self,
+        interaction: discord.Interaction,
+        main_slots: int = 40,
+        reserve_slots: int = 25,
+        event_type: Literal["ВЗХ", "ВЗП"] = "ВЗХ",
+        time: str = "Сегодня 19:00"
+    ):
         if not await is_mp_organizer(interaction):
             embed = create_error_embed("Доступ запрещён", "У вас нет прав организатора МП для этой команды.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -581,53 +713,67 @@ class MPCog(commands.Cog, name="MP"):
             return
 
         session_id = await execute_query(
-            "INSERT INTO mp_sessions (guild_id, channel_id, main_slots, reserve_slots, main_list, reserve_list, is_active) VALUES (?, ?, ?, ?, '[]', '[]', 1)",
-            (interaction.guild_id, interaction.channel_id, main_slots, reserve_slots)
+            "INSERT INTO mp_sessions (guild_id, channel_id, event_type, event_time, main_slots, reserve_slots, main_list, reserve_list, is_active) VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', 1)",
+            (interaction.guild_id, interaction.channel_id, event_type, time, main_slots, reserve_slots)
         )
 
-        embed = self.build_nabor_embed(main_slots, reserve_slots, [], [], interaction.guild)
+        embed = self.build_nabor_embed(main_slots, reserve_slots, [], [], event_type, time)
         view = MpRegistrationView(session_id, self)
-        await view.update_view_items({
-            'main_slots': main_slots,
-            'reserve_slots': reserve_slots,
-            'main_list': '[]',
-            'reserve_list': '[]'
-        }, interaction.guild)
 
         await interaction.response.send_message(embed=embed, view=view)
         msg = await interaction.original_response()
 
         await execute_query("UPDATE mp_sessions SET message_id = ? WHERE session_id = ?", (msg.id, session_id))
 
-    def build_nabor_embed(self, main_slots: int, reserve_slots: int, main_list: list, reserve_list: list, guild: discord.Guild) -> discord.Embed:
-        embed = create_embed(
-            title="⚔️ НАБОР НА МЕРОПРИЯТИЕ (ВЗП / ВЗХ)",
-            description=(
-                "Нажмите кнопку **«Записаться / Выписаться»** ниже, чтобы подать заявку в запасной состав.\n"
-                "Организаторы перемещают проверенных бойцов из запаса в основной состав стрелочкой **⬆️**."
-            ),
-            color=EMBED_COLOR
-        )
+    def build_nabor_embed(
+        self,
+        main_slots: int,
+        reserve_slots: int,
+        main_list: list,
+        reserve_list: list,
+        event_type: str = "ВЗХ",
+        event_time: str = "Сегодня 19:00"
+    ) -> discord.Embed:
+        """
+        Формирует стильный Embed набора точно как в референсе Requiem:
+        ☁️ ВЗХ
+        ────────────────────────────────────────
+        > Регистрация: ✔️ доступна
+        > Время проведения: 🛒 Сегодня 19:00
+        ────────────────────────────────────────
+        👤 Основной состав (X/Y)
+        1. @User...
+        ────────────────────────────────────────
+        👤 Запас (X/Y)
+        41. @User...
+        """
+        desc_lines = [
+            f"### ☁️ {event_type}",
+            DIVIDER_LINE,
+            f"> **Регистрация:** ✔️ доступна",
+            f"> **Время проведения:** 🛒 `{event_time}`",
+            DIVIDER_LINE,
+            f"**👤 Основной состав ({len(main_list)}/{main_slots})**"
+        ]
 
         if main_list:
-            main_text = "\n".join([f"**{i+1}.** <@{uid}>" for i, uid in enumerate(main_list)])
+            for i, uid in enumerate(main_list):
+                desc_lines.append(f"{i+1}. <@{uid}>")
         else:
-            main_text = "*Список пуст*"
+            desc_lines.append("*Список пуст*")
+
+        desc_lines.append(DIVIDER_LINE)
+        desc_lines.append(f"**👤 Запас ({len(reserve_list)}/{reserve_slots})**")
 
         if reserve_list:
-            reserve_text = "\n".join([f"**{i+1}.** <@{uid}>" for i, uid in enumerate(reserve_list)])
+            for i, uid in enumerate(reserve_list):
+                desc_lines.append(f"{i + main_slots + 1}. <@{uid}>")
         else:
-            reserve_text = "*Список пуст*"
+            desc_lines.append("*Список пуст*")
 
-        embed.add_field(
-            name=f"🛡️ Основной состав ({len(main_list)} / {main_slots})",
-            value=main_text,
-            inline=False
-        )
-        embed.add_field(
-            name=f"🔄 Запасной состав ({len(reserve_list)} / {reserve_slots})",
-            value=reserve_text,
-            inline=False
+        embed = discord.Embed(
+            description="\n".join(desc_lines),
+            color=DARK_EMBED_COLOR
         )
         return embed
 
@@ -647,10 +793,11 @@ class MPCog(commands.Cog, name="MP"):
 
         main_list = json_to_list(session['main_list'])
         reserve_list = json_to_list(session['reserve_list'])
+        event_type = session.get('event_type') or "ВЗХ"
+        event_time = session.get('event_time') or "Сегодня 19:00"
 
-        embed = self.build_nabor_embed(session['main_slots'], session['reserve_slots'], main_list, reserve_list, guild)
+        embed = self.build_nabor_embed(session['main_slots'], session['reserve_slots'], main_list, reserve_list, event_type, event_time)
         view = MpRegistrationView(session_id, self)
-        await view.update_view_items(session, guild)
 
         await message.edit(embed=embed, view=view)
 
@@ -672,6 +819,14 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        await self.execute_start(interaction, session, event_type)
+
+    async def start_session_from_button(self, interaction: discord.Interaction, session: dict):
+        """Запуск МП из кнопки в панели управления."""
+        event_type = session.get('event_type') or "ВЗХ"
+        await self.execute_start(interaction, session, event_type)
+
+    async def execute_start(self, interaction: discord.Interaction, session: dict, event_type: Optional[str]):
         if session['thread_id']:
             embed = create_warning_embed("Внимание", "Ветка для этого мероприятия уже была создана ранее!")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -683,14 +838,15 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        await interaction.response.defer()
+        channel = interaction.guild.get_channel(session['channel_id']) or interaction.channel
+        chosen_type = event_type or session.get('event_type') or 'ВЗХ'
 
         now = datetime.now()
-        mode_prefix = event_type if event_type else "мп"
-        thread_name = f"⚔️・{mode_prefix.lower()}-{now.strftime('%d-%m-%H-%M')}"
+        mode_prefix = chosen_type.lower()
+        thread_name = f"⚔️・{mode_prefix}-{now.strftime('%d-%m-%H-%M')}"
 
         try:
-            thread = await interaction.channel.create_thread(
+            thread = await channel.create_thread(
                 name=thread_name,
                 type=discord.ChannelType.private_thread,
                 invitable=False,
@@ -698,7 +854,10 @@ class MPCog(commands.Cog, name="MP"):
             )
         except Exception as e:
             embed = create_error_embed("Ошибка создания ветки", f"Не удалось создать приватную ветку: {e}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         added_count = 0
@@ -718,7 +877,7 @@ class MPCog(commands.Cog, name="MP"):
 
         await execute_query(
             "UPDATE mp_sessions SET thread_id = ?, event_type = ?, created_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-            (thread.id, event_type or 'ВЗП', session['session_id'])
+            (thread.id, chosen_type, session['session_id'])
         )
         self.active_position_sessions[thread.id] = session['session_id']
 
@@ -727,11 +886,14 @@ class MPCog(commands.Cog, name="MP"):
             f"Создана приватная ветка: {thread.mention}\nВ ветку добавлено участников основы: **{added_count}**.\n\n"
             f"⏱️ Таймер на 40 минут запущен. Для досрочного завершения используйте `/mp stop`."
         )
-        await interaction.followup.send(embed=embed_start)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed_start)
+        else:
+            await interaction.response.send_message(embed=embed_start)
 
         squad_mentions = " ".join([f"<@{uid}>" for uid in main_list])
 
-        if event_type == "ВЗХ":
+        if chosen_type == "ВЗХ":
             thread_embed = create_embed(
                 title="🛡️ ПОДГОТОВКА К МЕРОПРИЯТИЮ: ВЗХ",
                 description=(
@@ -740,11 +902,11 @@ class MPCog(commands.Cog, name="MP"):
                     f"Организаторы выбирают карту из 3 предложенных ниже.\n"
                     f"Затем используйте команду `/mp position [кол-во]`, чтобы распределить позиции!"
                 ),
-                color=EMBED_GREEN
+                color=DARK_EMBED_COLOR
             )
             map_view = MpMapSelectView(self, session['session_id'], VZH_MAPS)
             await thread.send(embed=thread_embed, view=map_view)
-        elif event_type == "ВЗП":
+        elif chosen_type == "ВЗП":
             thread_embed = create_embed(
                 title="⚔️ ПОДГОТОВКА К МЕРОПРИЯТИЮ: ВЗП",
                 description=(
@@ -753,7 +915,7 @@ class MPCog(commands.Cog, name="MP"):
                     f"Организаторы выбирают карту из 16 предложенных ниже.\n"
                     f"Затем используйте команду `/mp position [кол-во]`, чтобы распределить позиции!"
                 ),
-                color=EMBED_PURPLE
+                color=DARK_EMBED_COLOR
             )
             map_view = MpMapSelectView(self, session['session_id'], VZP_MAPS)
             await thread.send(embed=thread_embed, view=map_view)
@@ -765,7 +927,7 @@ class MPCog(commands.Cog, name="MP"):
                     f"**Участники основы:**\n{squad_mentions}\n\n"
                     f"Организатор {interaction.user.mention}, выберите формат мероприятия кнопкой ниже:"
                 ),
-                color=EMBED_COLOR
+                color=DARK_EMBED_COLOR
             )
             type_view = MpTypeSelectView(self, session['session_id'])
             await thread.send(embed=thread_embed, view=type_view)
@@ -822,7 +984,7 @@ class MPCog(commands.Cog, name="MP"):
                 f"• Если напишете другой номер — автоматически перейдёте на новую позицию.\n"
                 f"• Занятые позиции занять нельзя."
             ),
-            color=EMBED_GREEN
+            color=DARK_EMBED_COLOR
         )
 
         occupied_count = sum(1 for uid in pos_dict.values() if uid is not None)
@@ -868,7 +1030,6 @@ class MPCog(commands.Cog, name="MP"):
             (interaction.channel_id, interaction.channel_id)
         )
         if not session:
-            # Ищем любое активное в этой гильдии
             session = await fetch_one(
                 "SELECT * FROM mp_sessions WHERE guild_id = ? AND is_active = 1 ORDER BY session_id DESC LIMIT 1",
                 (interaction.guild_id,)
@@ -985,7 +1146,6 @@ class MPCog(commands.Cog, name="MP"):
         await self.bot.wait_until_ready()
 
     async def archive_session(self, session: dict):
-        """Выполняет архивацию сессии МП: выгрузка отчёта в категорию и закрытие ветки."""
         session_id = session['session_id']
         guild_id = session['guild_id']
         thread_id = session['thread_id']
@@ -1009,7 +1169,7 @@ class MPCog(commands.Cog, name="MP"):
         report_embed = create_embed(
             title=f"📁 АРХИВ МЕРОПРИЯТИЯ: {event_type.upper()}",
             description=f"Мероприятие {event_type} успешно завершено.\nВетка: {thread.mention if thread else 'Удалена'}",
-            color=EMBED_ORANGE
+            color=DARK_EMBED_COLOR
         )
         report_embed.add_field(name="🗺️ Выбранная карта", value=f"**{map_name}**", inline=False)
 

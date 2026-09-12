@@ -248,7 +248,8 @@ async def init_db():
                 channel_id BIGINT,
                 thread_id BIGINT DEFAULT NULL,
                 message_id BIGINT DEFAULT NULL,
-                event_type TEXT DEFAULT 'VZP',
+                event_type TEXT DEFAULT 'ВЗХ',
+                event_time TEXT DEFAULT 'Сегодня 19:00',
                 main_slots INTEGER DEFAULT 10,
                 reserve_slots INTEGER DEFAULT 10,
                 main_list TEXT DEFAULT '[]',
@@ -260,6 +261,11 @@ async def init_db():
                 is_active INTEGER DEFAULT 1
             )
         ''')
+
+        try:
+            await conn.execute("ALTER TABLE mp_sessions ADD COLUMN IF NOT EXISTS event_time TEXT DEFAULT 'Сегодня 19:00'")
+        except Exception:
+            pass
 
 
 async def execute_query(query, params=None):
