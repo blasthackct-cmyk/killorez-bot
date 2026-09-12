@@ -1064,10 +1064,10 @@ class TicketCog(commands.Cog, name="Ticket"):
     async def cog_load(self):
         """Регистрация persistent views при старте бота"""
         try:
-            # Автоматически обновляем старые шаблоны (Redwood, ---, ──────) на новый с ---SPLIT--- маркерами
+            # Автоматически обновляем старые шаблоны на актуальный
             try:
                 await execute_query(
-                    "UPDATE ticket_panels SET description = ? WHERE description LIKE '%Redwood%' OR description LIKE '%──────%' OR description LIKE '%---\n%' OR description LIKE '%---\r%'",
+                    "UPDATE ticket_panels SET description = ? WHERE description LIKE '%Redwood%' OR description LIKE '%──────%' OR description LIKE '%---SPLIT---%' OR description LIKE '%---\n%' OR description LIKE '%---\r%'",
                     (DEFAULT_PANEL_TEMPLATE,)
                 )
             except Exception as ex:
