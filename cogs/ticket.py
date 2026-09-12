@@ -8,6 +8,8 @@ import traceback
 import aiohttp
 import io
 import re
+import os
+from typing import Optional
 try:
     from PIL import Image
 except ImportError:
@@ -98,20 +100,67 @@ def make_wide_banner(image_bytes: bytes, target_ratio: float = 1.85) -> io.Bytes
         return io.BytesIO(image_bytes)
 
 
-async def get_banner_file(url):
-    """Скачивает изображение баннера и возвращает discord.File для размещения сверху сообщения в полный размер"""
-    if not url or not url.strip():
+def get_local_logo_path() -> Optional[str]:
+    """Ищет локальный файл логотипа в папке assets/"""
+    candidates = [
+        "assets/killorez_logo.png",
+        "assets/logo.png",
+        "assets/killorez_banner.jpg",
+        "assets/banner.png",
+    ]
+    for cand in candidates:
+        full_path = os.path.join(os.getcwd(), cand)
+        if os.path.exists(full_path):
+            return full_path
+
+    assets_dir = os.path.join(os.getcwd(), "assets")
+    if os.path.exists(assets_dir):
+        for f in os.listdir(assets_dir):
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) and "map" not in f.lower():
+                return os.path.join(assets_dir, f)
+    return None
+
+
+async def get_banner_file(url=None):
+    """
+    Возвращает discord.File для размещения логотипа сверху сообщения.
+    Приоритет:
+    1. Локальный путь на диске.
+    2. Если url пустой -> автоподхват локального логотипа assets/killorez_logo.png!
+    3. Скачивание онлайн-ссылки.
+    4. Фолбэк на локальный логотип, если онлайн-ссылка сломалась.
+    """
+    # 1. Локальный файл передан в качестве url
+    if url and os.path.exists(str(url)) and os.path.isfile(str(url)):
+        ext = os.path.splitext(str(url))[1].lstrip('.').lower() or 'png'
+        try:
+            with open(str(url), 'rb') as f:
+                return discord.File(io.BytesIO(f.read()), filename=f"logo.{ext}")
+        except Exception as e:
+            print(f"[TICKET] Error reading local banner: {e}")
+
+    # 2. Автоподхват локального логотипа, если url пустой
+    if not url or not str(url).strip():
+        local_path = get_local_logo_path()
+        if local_path and os.path.exists(local_path):
+            ext = os.path.splitext(local_path)[1].lstrip('.').lower() or 'png'
+            try:
+                with open(local_path, 'rb') as f:
+                    return discord.File(io.BytesIO(f.read()), filename=f"logo.{ext}")
+            except Exception as e:
+                print(f"[TICKET] Error reading auto-logo: {e}")
         return None
-    url = normalize_banner_url(url.strip())
+
+    # 3. Скачивание по онлайн-ссылке
+    url_str = normalize_banner_url(str(url).strip())
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
-            # Если передана ссылка на страницу/альбом Imgur, извлекаем og:image
-            if "imgur.com/a/" in url or "imgur.com/gallery/" in url:
+            if "imgur.com/a/" in url_str or "imgur.com/gallery/" in url_str:
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as page_resp:
+                    async with session.get(url_str, timeout=aiohttp.ClientTimeout(total=5)) as page_resp:
                         if page_resp.status == 200:
                             html = await page_resp.text()
                             m = (
@@ -120,28 +169,37 @@ async def get_banner_file(url):
                                 or re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html)
                             )
                             if m:
-                                url = m.group(1).split("?")[0]
+                                url_str = m.group(1).split("?")[0]
                 except Exception as ex:
                     print(f"[TICKET] Imgur album resolution failed: {ex}")
 
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            async with session.get(url_str, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
-                    if not data:
-                        return None
-                    # Возвращаем оригинальное изображение без искажения и белых рамок
-                    ext = "png"
-                    if "jpeg" in resp.headers.get("Content-Type", "") or url.lower().endswith((".jpg", ".jpeg")):
-                        ext = "jpg"
-                    elif "gif" in resp.headers.get("Content-Type", "") or url.lower().endswith(".gif"):
-                        ext = "gif"
-                    elif "webp" in resp.headers.get("Content-Type", "") or url.lower().endswith(".webp"):
-                        ext = "webp"
-                    return discord.File(io.BytesIO(data), filename=f"banner.{ext}")
+                    if data:
+                        ext = "png"
+                        if "jpeg" in resp.headers.get("Content-Type", "") or url_str.lower().endswith((".jpg", ".jpeg")):
+                            ext = "jpg"
+                        elif "gif" in resp.headers.get("Content-Type", "") or url_str.lower().endswith(".gif"):
+                            ext = "gif"
+                        elif "webp" in resp.headers.get("Content-Type", "") or url_str.lower().endswith(".webp"):
+                            ext = "webp"
+                        return discord.File(io.BytesIO(data), filename=f"logo.{ext}")
                 else:
-                    print(f"[TICKET] Banner download failed HTTP {resp.status} for {url}")
+                    print(f"[TICKET] Banner download failed HTTP {resp.status} for {url_str}")
     except Exception as e:
         print(f"[TICKET] Error downloading banner: {e}")
+
+    # 4. Фолбэк на локальный файл
+    local_path = get_local_logo_path()
+    if local_path and os.path.exists(local_path):
+        ext = os.path.splitext(local_path)[1].lstrip('.').lower() or 'png'
+        try:
+            with open(local_path, 'rb') as f:
+                return discord.File(io.BytesIO(f.read()), filename=f"logo.{ext}")
+        except Exception:
+            pass
+
     return None
 
 
