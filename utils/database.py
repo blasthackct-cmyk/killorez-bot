@@ -232,6 +232,35 @@ async def init_db():
             )
         ''')
 
+        # MP system (VZP / VZH)
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS mp_settings (
+                guild_id BIGINT PRIMARY KEY,
+                organizer_roles TEXT DEFAULT '[]',
+                archive_category_id BIGINT DEFAULT NULL
+            )
+        ''')
+
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS mp_sessions (
+                session_id SERIAL PRIMARY KEY,
+                guild_id BIGINT,
+                channel_id BIGINT,
+                thread_id BIGINT DEFAULT NULL,
+                message_id BIGINT DEFAULT NULL,
+                event_type TEXT DEFAULT 'VZP',
+                main_slots INTEGER DEFAULT 10,
+                reserve_slots INTEGER DEFAULT 10,
+                main_list TEXT DEFAULT '[]',
+                reserve_list TEXT DEFAULT '[]',
+                selected_map TEXT DEFAULT '',
+                positions TEXT DEFAULT '{}',
+                pos_message_id BIGINT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1
+            )
+        ''')
+
 
 async def execute_query(query, params=None):
     """Выполняет запрос (INSERT, UPDATE, DELETE). Возвращает lastrowid для INSERT."""
@@ -268,6 +297,7 @@ def _get_serial_column(insert_query):
         'market_products': 'product_id',
         'point_events': 'event_id',
         'ticket_panels': 'panel_id',
+        'mp_sessions': 'session_id',
     }
     query_upper = insert_query.upper()
     for table, col in serial_map.items():

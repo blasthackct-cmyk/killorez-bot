@@ -51,7 +51,7 @@ async def on_ready():
     log.info('Status установлен')
 
     # Load cogs
-    cogs_to_load = ['afk', 'ticket', 'car', 'warnings', 'points', 'market', 'commands']
+    cogs_to_load = ['afk', 'ticket', 'car', 'warnings', 'points', 'market', 'commands', 'mp']
     for cog_name in cogs_to_load:
         try:
             await bot.load_extension(f'cogs.{cog_name}')
