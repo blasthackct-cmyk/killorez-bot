@@ -42,14 +42,29 @@ MAPS_DIR = os.path.join(os.getcwd(), "assets", "maps")
 
 
 async def is_mp_organizer(interaction: discord.Interaction) -> bool:
-    """Проверяет, является ли пользователь администратором или имеет роль организатора МП."""
-    if interaction.user.guild_permissions.administrator:
+    """
+    Проверяет, является ли пользователь администратором или имеет хотя бы одну
+    из настроенных выборочных ролей организатора МП.
+    """
+    if not interaction.guild:
+        return False
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = interaction.guild.get_member(interaction.user.id)
+        if not member:
+            try:
+                member = await interaction.guild.fetch_member(interaction.user.id)
+            except Exception:
+                return False
+
+    if member.guild_permissions.administrator:
         return True
 
     settings = await fetch_one("SELECT organizer_roles FROM mp_settings WHERE guild_id = ?", (interaction.guild_id,))
     if settings and settings['organizer_roles']:
         role_ids = json_to_list(settings['organizer_roles'])
-        user_role_ids = [r.id for r in interaction.user.roles]
+        user_role_ids = [r.id for r in member.roles]
         if any(rid in user_role_ids for rid in role_ids):
             return True
 
@@ -77,6 +92,49 @@ def find_map_file(map_name: str):
 # ==============================================================================
 # UI VIEWS
 # ==============================================================================
+
+class MpRoleSelect(discord.ui.RoleSelect):
+    """Выпадающее меню для выбора нескольких ролей организаторов сразу."""
+    def __init__(self, current_roles: list):
+        default_roles = []
+        super().__init__(
+            placeholder="Выберите роли организаторов (можно несколько)...",
+            min_values=0,
+            max_values=25
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Только Администратор сервера может настраивать роли!", ephemeral=True)
+            return
+
+        selected_role_ids = [role.id for role in self.values]
+        await execute_query(
+            "INSERT INTO mp_settings (guild_id, organizer_roles) VALUES (?, ?) ON CONFLICT (guild_id) DO UPDATE SET organizer_roles = EXCLUDED.organizer_roles",
+            (interaction.guild_id, list_to_json(selected_role_ids))
+        )
+
+        if selected_role_ids:
+            mentions = ", ".join([f"<@&{rid}>" for rid in selected_role_ids])
+            embed = create_success_embed(
+                "Роли организаторов обновлены",
+                f"Назначено ролей организаторов: **{len(selected_role_ids)}**\n{mentions}\n\n"
+                f"Пользователи с этими ролями могут открывать наборы, запускать МП, выбирать карты и позиции."
+            )
+        else:
+            embed = create_warning_embed(
+                "Роли организаторов сброшены",
+                "Список ролей очищен. Теперь управлять МП могут только Администраторы сервера."
+            )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class MpRoleSelectView(discord.ui.View):
+    def __init__(self, current_roles: list):
+        super().__init__(timeout=300)
+        self.add_item(MpRoleSelect(current_roles))
+
 
 class MpRegistrationView(discord.ui.View):
     """View для набора участников МП с кнопками и меню перемещения в основу."""
@@ -169,7 +227,7 @@ class MpRegistrationView(discord.ui.View):
 
     async def on_promote_selected(self, interaction: discord.Interaction):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("У вас нет прав организатора для перемещения участников!", ephemeral=True)
+            await interaction.response.send_message("❌ У вас нет прав организатора МП для перемещения участников!", ephemeral=True)
             return
 
         session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (self.session_id,))
@@ -201,7 +259,7 @@ class MpRegistrationView(discord.ui.View):
 
     async def on_cancel_clicked(self, interaction: discord.Interaction):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("Только организаторы могут отменить набор!", ephemeral=True)
+            await interaction.response.send_message("❌ Только организаторы могут отменить набор!", ephemeral=True)
             return
 
         await execute_query("UPDATE mp_sessions SET is_active = 0 WHERE session_id = ?", (self.session_id,))
@@ -219,7 +277,7 @@ class MpTypeSelectView(discord.ui.View):
     @discord.ui.button(label="ВЗП (16 карт)", style=discord.ButtonStyle.primary, emoji="⚔️", custom_id="mp_type_vzp")
     async def vzp_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("Только организатор может выбрать тип мероприятия!", ephemeral=True)
+            await interaction.response.send_message("❌ Только пользователи с правами/ролью организатора могут выбирать тип мероприятия!", ephemeral=True)
             return
 
         await execute_query("UPDATE mp_sessions SET event_type = 'ВЗП' WHERE session_id = ?", (self.session_id,))
@@ -227,9 +285,10 @@ class MpTypeSelectView(discord.ui.View):
         embed = create_embed(
             title="⚔️ ВЫБРАНО МЕРОПРИЯТИЕ: ВЗП",
             description=(
-                f"Организатор {interaction.user.mention} выбрал формат **ВЗП**.\n"
-                f"Выберите одну из 16 карт ниже, чтобы отобразить её в чате.\n"
-                f"Затем используйте команду `/mp position [кол-во]`, чтобы открыть табло позиций!"
+                f"Организатор {interaction.user.mention} выбрал формат **ВЗП**.\n\n"
+                f"🛡️ **Выберите карту ниже (доступно только организаторам):**\n"
+                f"После выбора карты запустите `/mp position [кол-во]`, чтобы открыть табло позиций.\n"
+                f"Для досрочного завершения используйте `/mp stop`."
             ),
             color=EMBED_PURPLE
         )
@@ -239,7 +298,7 @@ class MpTypeSelectView(discord.ui.View):
     @discord.ui.button(label="ВЗХ (3 карты)", style=discord.ButtonStyle.success, emoji="🛡️", custom_id="mp_type_vzh")
     async def vzh_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("Только организатор может выбрать тип мероприятия!", ephemeral=True)
+            await interaction.response.send_message("❌ Только пользователи с правами/ролью организатора могут выбирать тип мероприятия!", ephemeral=True)
             return
 
         await execute_query("UPDATE mp_sessions SET event_type = 'ВЗХ' WHERE session_id = ?", (self.session_id,))
@@ -247,9 +306,10 @@ class MpTypeSelectView(discord.ui.View):
         embed = create_embed(
             title="🛡️ ВЫБРАНО МЕРОПРИЯТИЕ: ВЗХ",
             description=(
-                f"Организатор {interaction.user.mention} выбрал формат **ВЗХ**.\n"
-                f"Выберите одну из 3 карт ниже, чтобы отобразить её в чате.\n"
-                f"Затем используйте команду `/mp position [кол-во]`, чтобы открыть табло позиций!"
+                f"Организатор {interaction.user.mention} выбрал формат **ВЗХ**.\n\n"
+                f"🛡️ **Выберите карту ниже (доступно только организаторам):**\n"
+                f"После выбора карты запустите `/mp position [кол-во]`, чтобы открыть табло позиций.\n"
+                f"Для досрочного завершения используйте `/mp stop`."
             ),
             color=EMBED_GREEN
         )
@@ -266,8 +326,12 @@ class MpMapButton(discord.ui.Button):
         self.session_id = session_id
 
     async def callback(self, interaction: discord.Interaction):
+        # Строгая проверка: карту могут выбирать ТОЛЬКО администраторы и выборочные роли организаторов
         if not await is_mp_organizer(interaction):
-            await interaction.response.send_message("Только организатор может выбрать карту!", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ **Доступ запрещён!** Выбирать карту могут только организаторы с назначенной ролью или администраторы.",
+                ephemeral=True
+            )
             return
 
         await execute_query("UPDATE mp_sessions SET selected_map = ? WHERE session_id = ?", (self.map_name, self.session_id))
@@ -277,7 +341,11 @@ class MpMapButton(discord.ui.Button):
 
         embed = create_embed(
             title=f"🗺️ Выбрана карта: {self.map_name}",
-            description=f"Организатор {interaction.user.mention} утвердил карту **{self.map_name}**.",
+            description=(
+                f"Организатор {interaction.user.mention} утвердил карту **{self.map_name}**.\n\n"
+                f"👉 Запустите `/mp position [кол-во]`, чтобы участники основы могли занимать позиции!\n"
+                f"👉 Для завершения МП напишите `/mp stop`."
+            ),
             color=EMBED_PURPLE
         )
 
@@ -291,14 +359,38 @@ class MpMapButton(discord.ui.Button):
             await interaction.response.send_message(embed=embed)
 
 
+class MpEndButton(discord.ui.Button):
+    """Кнопка досрочного завершения МП."""
+    def __init__(self, cog, session_id: int, row: int):
+        super().__init__(label="🛑 Завершить МП", style=discord.ButtonStyle.danger, row=row)
+        self.cog = cog
+        self.session_id = session_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await is_mp_organizer(interaction):
+            await interaction.response.send_message("❌ Только организаторы могут досрочно завершить мероприятие!", ephemeral=True)
+            return
+
+        session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ? AND is_active = 1", (self.session_id,))
+        if not session:
+            await interaction.response.send_message("Мероприятие уже завершено.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("Завершаю мероприятие и формирую архив...", ephemeral=True)
+        await self.cog.archive_session(session)
+
+
 class MpMapSelectView(discord.ui.View):
-    """Сетка кнопок карт для выбранного режима."""
+    """Сетка кнопок карт для выбранного режима + кнопка завершения."""
     def __init__(self, cog, session_id: int, maps: list):
         super().__init__(timeout=None)
         # До 4 кнопок в ряду
         for i, map_name in enumerate(maps):
-            row = min(i // 4, 4)
+            row = min(i // 4, 3)
             self.add_item(MpMapButton(map_name, cog, session_id, row=row))
+
+        # Добавляем кнопку завершения МП на последний ряд
+        self.add_item(MpEndButton(cog, session_id, row=4))
 
 
 # ==============================================================================
@@ -316,7 +408,6 @@ class MPCog(commands.Cog, name="MP"):
         self.archive_check_loop.cancel()
 
     async def cog_load(self):
-        # Загрузка активных сессий с распределением позиций
         try:
             sessions = await fetch_all("SELECT session_id, thread_id FROM mp_sessions WHERE is_active = 1 AND thread_id IS NOT NULL")
             for s in sessions:
@@ -329,44 +420,104 @@ class MPCog(commands.Cog, name="MP"):
     settings_group = app_commands.Group(name="settings", description="Настройки системы МП", parent=mp)
 
     # ------------------ НАСТРОЙКИ ------------------
-    @settings_group.command(name="role_add", description="Добавить роль организатора МП")
-    @app_commands.describe(role="Роль организатора")
+    @settings_group.command(name="roles", description="Выбрать несколько ролей организаторов МП через удобное меню")
     @app_commands.checks.has_permissions(administrator=True)
-    async def settings_role_add(self, interaction: discord.Interaction, role: discord.Role):
+    async def settings_roles_menu(self, interaction: discord.Interaction):
+        settings = await fetch_one("SELECT * FROM mp_settings WHERE guild_id = ?", (interaction.guild_id,))
+        current_roles = json_to_list(settings['organizer_roles']) if settings and settings['organizer_roles'] else []
+
+        embed = create_embed(
+            title="🛡️ Выбор ролей организаторов МП",
+            description=(
+                "Выберите одну или несколько ролей из выпадающего списка ниже.\n\n"
+                "Люди с выбранными ролями смогут:\n"
+                "• Открывать набор (`/mp nabor`)\n"
+                "• Переносить людей из запаса в основу (`⬆️`)\n"
+                "• Запускать ВЗП / ВЗХ (`/mp start`)\n"
+                "• **Выбирать карты**\n"
+                "• Запускать распределение позиций (`/mp position`)\n"
+                "• Завершать мероприятие (`/mp stop`)"
+            ),
+            color=EMBED_COLOR
+        )
+        view = MpRoleSelectView(current_roles)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @settings_group.command(name="role_add", description="Добавить роль (или несколько ролей) организатора МП")
+    @app_commands.describe(
+        role="Первая роль организатора",
+        role2="Вторая роль (необязательно)",
+        role3="Третья роль (необязательно)",
+        role4="Четвертая роль (необязательно)",
+        role5="Пятая роль (необязательно)"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def settings_role_add(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        role2: Optional[discord.Role] = None,
+        role3: Optional[discord.Role] = None,
+        role4: Optional[discord.Role] = None,
+        role5: Optional[discord.Role] = None
+    ):
         settings = await fetch_one("SELECT * FROM mp_settings WHERE guild_id = ?", (interaction.guild_id,))
         roles = json_to_list(settings['organizer_roles']) if settings and settings['organizer_roles'] else []
 
-        if role.id in roles:
-            embed = create_warning_embed("Внимание", f"Роль {role.mention} уже является ролью организатора.")
+        added = []
+        for r in [role, role2, role3, role4, role5]:
+            if r and r.id not in roles:
+                roles.append(r.id)
+                added.append(r.mention)
+
+        if not added:
+            embed = create_warning_embed("Внимание", "Все указанные роли уже являются организаторами.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        roles.append(role.id)
         await execute_query(
             "INSERT INTO mp_settings (guild_id, organizer_roles) VALUES (?, ?) ON CONFLICT (guild_id) DO UPDATE SET organizer_roles = EXCLUDED.organizer_roles",
             (interaction.guild_id, list_to_json(roles))
         )
-        embed = create_success_embed("Роль добавлена", f"Роль {role.mention} теперь может управлять набором и проведением МП.")
+        embed = create_success_embed(
+            "Роли организаторов добавлены",
+            f"Добавлены роли: {', '.join(added)}\nТеперь они могут выбирать карты и управлять проведением МП."
+        )
         await interaction.response.send_message(embed=embed)
 
-    @settings_group.command(name="role_remove", description="Удалить роль организатора МП")
-    @app_commands.describe(role="Роль для удаления")
+    @settings_group.command(name="role_remove", description="Удалить роль (или несколько ролей) организатора МП")
+    @app_commands.describe(
+        role="Первая роль для удаления",
+        role2="Вторая роль (необязательно)",
+        role3="Третья роль (необязательно)"
+    )
     @app_commands.checks.has_permissions(administrator=True)
-    async def settings_role_remove(self, interaction: discord.Interaction, role: discord.Role):
+    async def settings_role_remove(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        role2: Optional[discord.Role] = None,
+        role3: Optional[discord.Role] = None
+    ):
         settings = await fetch_one("SELECT * FROM mp_settings WHERE guild_id = ?", (interaction.guild_id,))
         roles = json_to_list(settings['organizer_roles']) if settings and settings['organizer_roles'] else []
 
-        if role.id not in roles:
-            embed = create_warning_embed("Внимание", f"Роль {role.mention} не найдена в списке организаторов.")
+        removed = []
+        for r in [role, role2, role3]:
+            if r and r.id in roles:
+                roles.remove(r.id)
+                removed.append(r.mention)
+
+        if not removed:
+            embed = create_warning_embed("Внимание", "Ни одна из указанных ролей не найдена в списке организаторов.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        roles.remove(role.id)
         await execute_query(
             "UPDATE mp_settings SET organizer_roles = ? WHERE guild_id = ?",
             (list_to_json(roles), interaction.guild_id)
         )
-        embed = create_success_embed("Роль удалена", f"Роль {role.mention} удалена из организаторов МП.")
+        embed = create_success_embed("Роли удалены", f"Удалены из организаторов МП: {', '.join(removed)}.")
         await interaction.response.send_message(embed=embed)
 
     @settings_group.command(name="archive_category", description="Установить категорию для архива МП")
@@ -383,21 +534,25 @@ class MPCog(commands.Cog, name="MP"):
     @settings_group.command(name="view", description="Просмотреть текущие настройки МП")
     async def settings_view(self, interaction: discord.Interaction):
         settings = await fetch_one("SELECT * FROM mp_settings WHERE guild_id = ?", (interaction.guild_id,))
-        role_mentions = "Не настроены (только Администраторы)"
+        role_mentions = "Не настроены (только Администраторы сервера)"
         archive_category = "Не настроена"
+        roles = []
 
         if settings:
             roles = json_to_list(settings['organizer_roles'])
             if roles:
-                role_mentions = ", ".join([f"<@&{rid}>" for rid in roles])
+                role_mentions = "\n".join([f"• <@&{rid}>" for rid in roles])
             if settings['archive_category_id']:
                 cat = interaction.guild.get_channel(settings['archive_category_id'])
                 archive_category = cat.name if cat else f"ID: {settings['archive_category_id']} (не найдена)"
 
         embed = create_embed(title="⚙️ Настройки системы МП", color=EMBED_COLOR)
-        embed.add_field(name="🛡️ Роли организаторов", value=role_mentions, inline=False)
+        embed.add_field(name=f"🛡️ Роли организаторов ({len(roles)})", value=role_mentions, inline=False)
         embed.add_field(name="📁 Категория архива", value=archive_category, inline=False)
-        await interaction.response.send_message(embed=embed)
+
+        # Добавляем интерактивное меню настройки ролей
+        view = MpRoleSelectView(roles)
+        await interaction.response.send_message(embed=embed, view=view)
 
     # ------------------ /MP NABOR ------------------
     @mp.command(name="nabor", description="Открыть набор на мероприятие (ВЗП / ВЗХ)")
@@ -416,17 +571,15 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Проверяем, нет ли уже активного набора в этом канале
         existing = await fetch_one(
             "SELECT * FROM mp_sessions WHERE guild_id = ? AND channel_id = ? AND is_active = 1",
             (interaction.guild_id, interaction.channel_id)
         )
         if existing:
-            embed = create_warning_embed("Внимание", "В этом канале уже идёт активный набор или сессия МП! Завершите её или используйте другой канал.")
+            embed = create_warning_embed("Внимание", "В этом канале уже идёт активный набор или сессия МП! Завершите её командой `/mp stop` или используйте другой канал.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Создаём новую сессию
         session_id = await execute_query(
             "INSERT INTO mp_sessions (guild_id, channel_id, main_slots, reserve_slots, main_list, reserve_list, is_active) VALUES (?, ?, ?, ?, '[]', '[]', 1)",
             (interaction.guild_id, interaction.channel_id, main_slots, reserve_slots)
@@ -447,7 +600,6 @@ class MPCog(commands.Cog, name="MP"):
         await execute_query("UPDATE mp_sessions SET message_id = ? WHERE session_id = ?", (msg.id, session_id))
 
     def build_nabor_embed(self, main_slots: int, reserve_slots: int, main_list: list, reserve_list: list, guild: discord.Guild) -> discord.Embed:
-        """Генерирует embed сообщения набора."""
         embed = create_embed(
             title="⚔️ НАБОР НА МЕРОПРИЯТИЕ (ВЗП / ВЗХ)",
             description=(
@@ -457,13 +609,11 @@ class MPCog(commands.Cog, name="MP"):
             color=EMBED_COLOR
         )
 
-        # Формируем список основы
         if main_list:
             main_text = "\n".join([f"**{i+1}.** <@{uid}>" for i, uid in enumerate(main_list)])
         else:
             main_text = "*Список пуст*"
 
-        # Формируем список резерва
         if reserve_list:
             reserve_text = "\n".join([f"**{i+1}.** <@{uid}>" for i, uid in enumerate(reserve_list)])
         else:
@@ -482,7 +632,6 @@ class MPCog(commands.Cog, name="MP"):
         return embed
 
     async def refresh_nabor_message(self, session_id: int, guild: discord.Guild):
-        """Обновляет эмбед и компоненты сообщения набора."""
         session = await fetch_one("SELECT * FROM mp_sessions WHERE session_id = ?", (session_id,))
         if not session or not session['message_id'] or not session['channel_id']:
             return
@@ -514,7 +663,6 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Ищем активную сессию в этом канале
         session = await fetch_one(
             "SELECT * FROM mp_sessions WHERE guild_id = ? AND channel_id = ? AND is_active = 1",
             (interaction.guild_id, interaction.channel_id)
@@ -537,7 +685,6 @@ class MPCog(commands.Cog, name="MP"):
 
         await interaction.response.defer()
 
-        # Создаём приватную ветку
         now = datetime.now()
         mode_prefix = event_type if event_type else "мп"
         thread_name = f"⚔️・{mode_prefix.lower()}-{now.strftime('%d-%m-%H-%M')}"
@@ -554,7 +701,6 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        # Добавляем участников основы в ветку
         added_count = 0
         for uid in main_list:
             try:
@@ -565,38 +711,34 @@ class MPCog(commands.Cog, name="MP"):
             except Exception:
                 pass
 
-        # Добавляем организатора
         try:
             await thread.add_user(interaction.user)
         except Exception:
             pass
 
-        # Обновляем сессию в БД
         await execute_query(
             "UPDATE mp_sessions SET thread_id = ?, event_type = ?, created_at = CURRENT_TIMESTAMP WHERE session_id = ?",
             (thread.id, event_type or 'ВЗП', session['session_id'])
         )
         self.active_position_sessions[thread.id] = session['session_id']
 
-        # Отправляем подтверждение организатору в основном канале
         embed_start = create_success_embed(
             "Мероприятие успешно запущено!",
             f"Создана приватная ветка: {thread.mention}\nВ ветку добавлено участников основы: **{added_count}**.\n\n"
-            f"⏱️ Таймер на 40 минут запущен. По истечении времени ветка будет заархивирована."
+            f"⏱️ Таймер на 40 минут запущен. Для досрочного завершения используйте `/mp stop`."
         )
         await interaction.followup.send(embed=embed_start)
 
         squad_mentions = " ".join([f"<@{uid}>" for uid in main_list])
 
-        # Если тип мероприятия уже был выбран при вызове команды
         if event_type == "ВЗХ":
             thread_embed = create_embed(
                 title="🛡️ ПОДГОТОВКА К МЕРОПРИЯТИЮ: ВЗХ",
                 description=(
                     f"Добро пожаловать в ветку сборов на ВЗХ!\n\n"
                     f"**Участники основы:**\n{squad_mentions}\n\n"
-                    f"Организатор {interaction.user.mention} должен выбрать карту из 3 предложенных ниже.\n"
-                    f"После выбора карты организатор запускает команду `/mp position [кол-во]` для распределения позиций!"
+                    f"Организаторы выбирают карту из 3 предложенных ниже.\n"
+                    f"Затем используйте команду `/mp position [кол-во]`, чтобы распределить позиции!"
                 ),
                 color=EMBED_GREEN
             )
@@ -608,21 +750,20 @@ class MPCog(commands.Cog, name="MP"):
                 description=(
                     f"Добро пожаловать в ветку сборов на ВЗП!\n\n"
                     f"**Участники основы:**\n{squad_mentions}\n\n"
-                    f"Организатор {interaction.user.mention} должен выбрать карту из 16 предложенных ниже.\n"
-                    f"После выбора карты организатор запускает команду `/mp position [кол-во]` для распределения позиций!"
+                    f"Организаторы выбирают карту из 16 предложенных ниже.\n"
+                    f"Затем используйте команду `/mp position [кол-во]`, чтобы распределить позиции!"
                 ),
                 color=EMBED_PURPLE
             )
             map_view = MpMapSelectView(self, session['session_id'], VZP_MAPS)
             await thread.send(embed=thread_embed, view=map_view)
         else:
-            # Предоставляем интерактивный выбор: ВЗП или ВЗХ
             thread_embed = create_embed(
                 title="🎯 ПОДГОТОВКА К МЕРОПРИЯТИЮ",
                 description=(
                     f"Добро пожаловать в ветку сборов!\n\n"
                     f"**Участники основы:**\n{squad_mentions}\n\n"
-                    f"Организатор {interaction.user.mention}, выберите тип мероприятия кнопкой ниже:"
+                    f"Организатор {interaction.user.mention}, выберите формат мероприятия кнопкой ниже:"
                 ),
                 color=EMBED_COLOR
             )
@@ -640,7 +781,6 @@ class MPCog(commands.Cog, name="MP"):
 
         session_id = self.active_position_sessions.get(interaction.channel_id)
         if not session_id:
-            # Попробуем найти в БД по thread_id
             session = await fetch_one(
                 "SELECT * FROM mp_sessions WHERE thread_id = ? AND is_active = 1",
                 (interaction.channel_id,)
@@ -659,7 +799,6 @@ class MPCog(commands.Cog, name="MP"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Инициализируем позиции
         pos_dict = {str(i): None for i in range(1, positions_count + 1)}
         await execute_query(
             "UPDATE mp_sessions SET positions = ? WHERE session_id = ?",
@@ -676,7 +815,6 @@ class MPCog(commands.Cog, name="MP"):
         )
 
     def build_positions_embed(self, pos_dict: dict, total: int) -> discord.Embed:
-        """Строит Embed табло позиций."""
         embed = create_embed(
             title="📍 РАСПРЕДЕЛЕНИЕ ПОЗИЦИЙ НА КАРТЕ",
             description=(
@@ -698,7 +836,6 @@ class MPCog(commands.Cog, name="MP"):
             else:
                 lines.append(f"`{i:02d}` 🟢 *Свободно*")
 
-        # Если позиций много, делим на поля
         chunk_size = 15
         for i in range(0, len(lines), chunk_size):
             chunk = lines[i:i + chunk_size]
@@ -707,7 +844,6 @@ class MPCog(commands.Cog, name="MP"):
         return embed
 
     async def update_position_embed(self, channel: discord.Thread, session_id: int, pos_dict: dict):
-        """Обновляет сообщение табло позиций."""
         session = await fetch_one("SELECT pos_message_id FROM mp_sessions WHERE session_id = ?", (session_id,))
         if not session or not session['pos_message_id']:
             return
@@ -718,6 +854,33 @@ class MPCog(commands.Cog, name="MP"):
             await msg.edit(embed=embed)
         except Exception as e:
             log.warning(f"Не удалось обновить табло позиций: {e}")
+
+    # ------------------ /MP STOP (КОМАНДА ЗАВЕРШИТЬ МП) ------------------
+    @mp.command(name="stop", description="Досрочно завершить мероприятие и отправить отчёт в архив")
+    async def mp_stop(self, interaction: discord.Interaction):
+        if not await is_mp_organizer(interaction):
+            embed = create_error_embed("Доступ запрещён", "У вас нет прав организатора МП.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        session = await fetch_one(
+            "SELECT * FROM mp_sessions WHERE (thread_id = ? OR channel_id = ?) AND is_active = 1",
+            (interaction.channel_id, interaction.channel_id)
+        )
+        if not session:
+            # Ищем любое активное в этой гильдии
+            session = await fetch_one(
+                "SELECT * FROM mp_sessions WHERE guild_id = ? AND is_active = 1 ORDER BY session_id DESC LIMIT 1",
+                (interaction.guild_id,)
+            )
+
+        if not session:
+            embed = create_error_embed("Ошибка", "Активное мероприятие не найдено!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.send_message("🛑 Завершаю мероприятие, формирую архив и закрываю ветку...", ephemeral=True)
+        await self.archive_session(session)
 
     # ==================== СЛУШАТЕЛЬ ЧАТА (ПОЗИЦИИ) ====================
     @commands.Cog.listener()
@@ -748,14 +911,13 @@ class MPCog(commands.Cog, name="MP"):
         if pos_num < 1 or pos_num > total_positions:
             return
 
-        # Проверяем, что автор в основном составе или администратор
         main_list = json_to_list(session['main_list'])
         is_org = message.author.guild_permissions.administrator
 
         if not is_org and message.author.id not in main_list:
             try:
                 await message.delete()
-                warn = await message.channel.send(f"{message.author.mention}, только участники основного состава могут занимать позиции!", delete_after=3)
+                await message.channel.send(f"{message.author.mention}, только участники основного состава могут занимать позиции!", delete_after=3)
             except Exception:
                 pass
             return
@@ -763,7 +925,6 @@ class MPCog(commands.Cog, name="MP"):
         key = str(pos_num)
         current_owner = pos_dict.get(key)
 
-        # Если уже на этой позиции
         if current_owner == message.author.id:
             try:
                 await message.delete()
@@ -771,39 +932,31 @@ class MPCog(commands.Cog, name="MP"):
                 pass
             return
 
-        # Если позиция занята кем-то другим
         if current_owner is not None:
             try:
                 await message.delete()
-                warn = await message.channel.send(f"{message.author.mention}, позиция **{pos_num}** уже занята <@{current_owner}>!", delete_after=3)
+                await message.channel.send(f"{message.author.mention}, позиция **{pos_num}** уже занята <@{current_owner}>!", delete_after=3)
             except Exception:
                 pass
             return
 
-        # Позиция свободна! Освобождаем старую позицию пользователя (если была)
         for p_k, p_uid in pos_dict.items():
             if p_uid == message.author.id:
                 pos_dict[p_k] = None
 
-        # Занимаем новую
         pos_dict[key] = message.author.id
-
-        # Сохраняем в БД
         await execute_query("UPDATE mp_sessions SET positions = ? WHERE session_id = ?", (json.dumps(pos_dict), session_id))
 
-        # Удаляем сообщение с цифрой для чистоты чата
         try:
             await message.delete()
         except Exception:
             pass
 
-        # Обновляем табло
         await self.update_position_embed(message.channel, session_id, pos_dict)
 
-    # ==================== АВТО-АРХИВАЦИЯ ЧЕРЕЗ 40 МИНУТ ====================
+    # ==================== АВТО-АРХИВАЦИЯ ====================
     @tasks.loop(seconds=30)
     async def archive_check_loop(self):
-        """Каждые 30 секунд проверяет сессии, созданные более 40 минут назад."""
         try:
             active_sessions = await fetch_all(
                 "SELECT * FROM mp_sessions WHERE is_active = 1 AND thread_id IS NOT NULL"
@@ -850,25 +1003,22 @@ class MPCog(commands.Cog, name="MP"):
             except Exception:
                 thread = None
 
-        # Формируем сводный отчёт
         map_name = session['selected_map'] if session['selected_map'] else "Не выбрана"
         main_list = json_to_list(session['main_list'])
 
         report_embed = create_embed(
             title=f"📁 АРХИВ МЕРОПРИЯТИЯ: {event_type.upper()}",
-            description=f"Мероприятие {event_type} завершено. Истекли 40 минут с момента старта.\nВетка: {thread.mention if thread else 'Удалена'}",
+            description=f"Мероприятие {event_type} успешно завершено.\nВетка: {thread.mention if thread else 'Удалена'}",
             color=EMBED_ORANGE
         )
         report_embed.add_field(name="🗺️ Выбранная карта", value=f"**{map_name}**", inline=False)
 
-        # Участники основы
         if main_list:
             squad_str = "\n".join([f"• <@{uid}>" for uid in main_list])
         else:
             squad_str = "Нет данных"
         report_embed.add_field(name="🛡️ Основной состав", value=squad_str, inline=True)
 
-        # Распределение позиций
         pos_text = "Не распределялись"
         if session['positions']:
             try:
@@ -882,7 +1032,6 @@ class MPCog(commands.Cog, name="MP"):
                 pass
         report_embed.add_field(name="📍 Занятые позиции", value=pos_text, inline=False)
 
-        # Отправляем в категорию архива
         mp_settings = await fetch_one("SELECT * FROM mp_settings WHERE guild_id = ?", (guild_id,))
         archive_category_id = mp_settings['archive_category_id'] if mp_settings else None
 
@@ -918,19 +1067,17 @@ class MPCog(commands.Cog, name="MP"):
                     except Exception as e:
                         log.error(f"Не удалось отправить архив в канал: {e}")
 
-        # Уведомляем в ветке и архивируем её
         if thread:
             try:
                 notice = create_warning_embed(
-                    "⏰ Время вышло (40 минут)",
-                    "Ветка блокируется и архивируется. Сводный отчёт сохранён в архивную категорию."
+                    "🛑 Мероприятие завершено",
+                    "Ветка блокируется и архивируется. Сводный отчёт отправлен в архивную категорию."
                 )
                 await thread.send(embed=notice)
                 await thread.edit(locked=True, archived=True)
             except Exception as e:
                 log.warning(f"Не удалось заблокировать ветку: {e}")
 
-        # Деактивируем сессию
         await execute_query("UPDATE mp_sessions SET is_active = 0 WHERE session_id = ?", (session_id,))
         self.active_position_sessions.pop(thread_id, None)
 
