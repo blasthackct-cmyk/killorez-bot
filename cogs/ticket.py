@@ -40,6 +40,8 @@ def normalize_banner_url(url: str) -> str:
     if not url:
         return ""
     url = url.strip()
+    if "AlIAm86" in url:
+        return "https://i.imgur.com/AlIAm86.png"
     if "BlAM6rQ" in url:
         return "https://i.imgur.com/0pptHC0.jpeg"
     if "fQEFWks" in url:
@@ -1044,12 +1046,12 @@ class PanelSettingsView(discord.ui.View):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_embed:
-            if banner_file:
-                await interaction.response.send_message(embed=banner_embed, file=banner_file, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=banner_embed, ephemeral=True)
+        desc_embed = build_panel_embed_desc(panel)
+        if banner_file:
+            await interaction.response.send_message(file=banner_file, ephemeral=True)
+            await interaction.followup.send(embed=desc_embed, view=view, ephemeral=True)
+        elif panel.get('banner_url'):
+            await interaction.response.send_message(content=panel['banner_url'], ephemeral=True)
             await interaction.followup.send(embed=desc_embed, view=view, ephemeral=True)
         else:
             await interaction.response.send_message(embed=desc_embed, view=view, ephemeral=True)
@@ -1224,12 +1226,13 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_embed:
-            if banner_file:
-                await interaction.channel.send(embed=banner_embed, file=banner_file)
-            else:
-                await interaction.channel.send(embed=banner_embed)
+        desc_embed = build_panel_embed_desc(panel)
+
+        if banner_file:
+            await interaction.channel.send(file=banner_file)
+        elif panel.get('banner_url'):
+            await interaction.channel.send(content=panel['banner_url'])
+
         await interaction.channel.send(embed=desc_embed, view=view)
 
         await interaction.response.send_message("✅ Панель успешно отправлена в канал!", ephemeral=True)
@@ -1694,19 +1697,22 @@ class TicketCog(commands.Cog, name="Ticket"):
             panel.get('button_emoji')
         )
         banner_file = await get_banner_file(panel.get('banner_url'))
-        banner_embed, desc_embed = build_panel_embeds(panel, banner_filename=banner_file.filename if banner_file else None)
-        if banner_embed:
-            if banner_file:
-                await interaction.response.send_message(
-                    embed=banner_embed,
-                    file=banner_file,
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    embed=banner_embed,
-                    ephemeral=True
-                )
+        desc_embed = build_panel_embed_desc(panel)
+        if banner_file:
+            await interaction.response.send_message(
+                file=banner_file,
+                ephemeral=True
+            )
+            await interaction.followup.send(
+                embed=desc_embed,
+                view=view,
+                ephemeral=True
+            )
+        elif panel.get('banner_url'):
+            await interaction.response.send_message(
+                content=panel['banner_url'],
+                ephemeral=True
+            )
             await interaction.followup.send(
                 embed=desc_embed,
                 view=view,
