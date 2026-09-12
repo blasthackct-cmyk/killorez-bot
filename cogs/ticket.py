@@ -17,20 +17,21 @@ WATERMARK = "KILLOREZ HELPER"
 
 DEFAULT_PANEL_TEMPLATE = (
     "📢 **Открыты заявки на вступление в семью!**\n\n"
-    "> Заявки в семью принимаются только на сервер **Redwood**.\n"
-    "> Возраст для рассмотрения заявки: от **14 лет**.\n\n"
-    "**Срок рассмотрения заявок:** от пары часов до **2 дней**.\n"
-    "Решение направляется ботом в **личные сообщения** + **в ветку тикета**, где вас пригласят на **собеседование**. "
+    "> Заявки в семью принимаются только на сервер **Rockford**.\n"
+    "> Возраст для рассмотрения заявки: от **13 лет**.\n\n"
+    "---\n\n"
+    "**Срок рассмотрения заявок:** от пары часов до **1 дня**.\n"
+    "Решение направляется ботом в **личные сообщения + в ветку тикета**, где вас пригласят на **собеседование**. "
     "Отсутствие ответа в течение **24 часов** приводит к автоматическому закрытию тикета.\n\n"
-    "Внимательно прочитайте шаблон заявки при её подаче.\n"
-    "___\n\n"
+    "Внимательно прочитайте шаблон заявки при её подаче.\n\n"
+    "---\n\n"
     "**Дополнительные требования:**\n"
     "• Откаты с DM должны быть записаны **не более 1 недели** назад;\n"
-    "• Минимальное кол-во людей на DM — **10 человек**;\n"
-    "• Минимальная продолжительность DM — **10 минут**;\n"
+    "• Минимальное кол-во людей на DM — **2 человек**;\n"
+    "• Минимальная продолжительность DM — **5 минут**;\n"
     "• Видео-откат загружен на **YouTube / RuTube / Google Диск / Яндекс Диск**.\n\n"
-    "> После подачи заявки следите за **ЛС** или за **сгенерированным тикетом** на общение от рекрутеров.\n"
-    "___\n\n"
+    "> После подачи заявки следите за **ЛС** или за **сгенерированным тикетом** на общение от следящих.\n\n"
+    "---\n\n"
     "Ознакомьтесь с условиями выше и нажмите кнопку ниже ↓"
 )
 
@@ -1066,6 +1067,15 @@ class TicketCog(commands.Cog, name="Ticket"):
     async def cog_load(self):
         """Регистрация persistent views при старте бота"""
         try:
+            # Автоматически обновляем старый дефолтный шаблон (с Redwood) на новый (с Rockford и разделителями ---)
+            try:
+                await execute_query(
+                    "UPDATE ticket_panels SET description = ? WHERE description LIKE '%Redwood%'",
+                    (DEFAULT_PANEL_TEMPLATE,)
+                )
+            except Exception as ex:
+                print(f"[TICKET] Warning updating legacy template: {ex}")
+
             panels = await fetch_all("SELECT * FROM ticket_panels")
             count = 0
             for p in panels:
@@ -1614,6 +1624,30 @@ class TicketCog(commands.Cog, name="Ticket"):
         current_text = panel['description'] if panel and panel['description'] else DEFAULT_PANEL_TEMPLATE
         modal = PanelTextModal(panel_id, current_text)
         await interaction.response.send_modal(modal)
+
+    @panel.command(name="reset_text", description="Сбросить текст панели на стандартный шаблон оформления")
+    @app_commands.describe(panel_id="ID панели")
+    @app_commands.autocomplete(panel_id=panel_autocomplete)
+    async def panel_reset_text(self, interaction: discord.Interaction, panel_id: int):
+        panel = await fetch_one(
+            "SELECT * FROM ticket_panels WHERE panel_id = ? AND guild_id = ?",
+            (panel_id, interaction.guild.id)
+        )
+        if not panel:
+            embed = create_error_embed("Ошибка", "Панель не найдена!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await execute_query(
+            "UPDATE ticket_panels SET description = ? WHERE panel_id = ?",
+            (DEFAULT_PANEL_TEMPLATE, panel_id)
+        )
+        embed = create_success_embed(
+            "Текст сброшен",
+            "Текст панели успешно обновлен до стандартного шаблона (с сервером **Rockford** и аккуратными разделителями)!\n\n"
+            "Вы можете отредактировать его в любой момент через `/ticket panel text` или проверить через `/ticket panel preview`."
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ==================== БАННЕР ПАНЕЛИ ====================
 
